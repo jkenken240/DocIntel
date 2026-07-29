@@ -1,0 +1,94 @@
+name: docintel
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.1-pg17
+    environment:
+      POSTGRES_USER: ${DOCINTEL_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${DOCINTEL_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DOCINTEL_POSTGRES_DB}
+    ports:
+      - "${DOCINTEL_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - type: bind
+        source: ${DOCINTEL_POSTGRES_DATA_PATH}
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DOCINTEL_POSTGRES_USER} -d ${DOCINTEL_POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  migrate:
+    build:
+      context: ./apps/api
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DOCINTEL_DATABASE_URL: postgresql+psycopg://${DOCINTEL_POSTGRES_USER}:${DOCINTEL_POSTGRES_PASSWORD}@db:5432/${DOCINTEL_POSTGRES_DB}
+      DOCINTEL_AI_PROVIDER: mock
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      DOCINTEL_ENVIRONMENT: development
+      DOCINTEL_LOG_LEVEL: ${DOCINTEL_LOG_LEVEL:-INFO}
+      DOCINTEL_DATABASE_URL: postgresql+psycopg://${DOCINTEL_POSTGRES_USER}:${DOCINTEL_POSTGRES_PASSWORD}@db:5432/${DOCINTEL_POSTGRES_DB}
+      DOCINTEL_UPLOADS_PATH: /data/uploads
+      DOCINTEL_PROCESSED_PATH: /data/processed
+      DOCINTEL_SAMPLES_PATH: /data/samples
+      DOCINTEL_BACKUPS_PATH: /data/backups
+      DOCINTEL_CORS_ORIGINS: '["http://localhost:${DOCINTEL_WEB_PORT:-5173}"]'
+      DOCINTEL_AI_PROVIDER: mock
+      DOCINTEL_EMBEDDING_DIMENSIONS: ${DOCINTEL_EMBEDDING_DIMENSIONS:-1536}
+    ports:
+      - "${DOCINTEL_API_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ${DOCINTEL_UPLOADS_DATA_PATH}
+        target: /data/uploads
+      - type: bind
+        source: ${DOCINTEL_PROCESSED_DATA_PATH}
+        target: /data/processed
+      - type: bind
+        source: ${DOCINTEL_SAMPLES_DATA_PATH}
+        target: /data/samples
+        read_only: true
+      - type: bind
+        source: ${DOCINTEL_BACKUPS_DATA_PATH}
+        target: /data/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+    ports:
+      - "${DOCINTEL_WEB_PORT:-5173}:5173"
+    depends_on:
+      api:
+        condition: service_healthy
