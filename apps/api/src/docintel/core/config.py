@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, NonNegativeInt, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     samples_path: Path = Path("/data/samples")
     backups_path: Path = Path("/data/backups")
 
+    upload_max_bytes: PositiveInt = 25 * 1024 * 1024
+    upload_chunk_bytes: PositiveInt = 64 * 1024
+    deletion_job_max_attempts: PositiveInt = 3
+    deletion_retry_base_seconds: NonNegativeInt = 5
+    worker_poll_seconds: PositiveInt = 1
+    worker_lease_seconds: PositiveInt = 30
+
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     ai_provider: Literal["mock", "openai_compatible"] = "mock"
@@ -40,6 +47,14 @@ class Settings(BaseSettings):
     ai_chat_model: str | None = None
     ai_embedding_model: str | None = None
     ai_structured_output: bool = True
+
+    @model_validator(mode="after")
+    def validate_upload_streaming_configuration(self) -> Settings:
+        if self.upload_chunk_bytes < 5:
+            raise ValueError("upload_chunk_bytes must be at least 5 bytes")
+        if self.upload_chunk_bytes > self.upload_max_bytes:
+            raise ValueError("upload_chunk_bytes cannot exceed upload_max_bytes")
+        return self
 
     @property
     def storage_paths(self) -> dict[str, tuple[Path, bool]]:

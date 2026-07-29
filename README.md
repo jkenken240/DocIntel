@@ -1,24 +1,28 @@
 # DocIntel
 
 DocIntel is a planned AI-powered business document intelligence workspace. The
-repository currently contains the Phase 2 platform foundation only: a
-PostgreSQL/pgvector database, an Alembic migration, a FastAPI health surface,
-and a minimal React/Vite operational shell.
+repository currently contains the Phase 3 secure document lifecycle: a
+PostgreSQL/pgvector system of record, durable lifecycle jobs, protected local
+PDF storage, a FastAPI document API, a deletion worker, and the minimal
+React/Vite operational shell established in Phase 2.
 
-Document upload, extraction, chunking, embeddings, retrieval, question
-answering, citations, PDF viewing, and the finished visual interface are
-intentionally not implemented yet.
+PDF extraction, chunking, embeddings, retrieval, question answering, citations,
+PDF viewer UI, and the finished visual interface are intentionally not
+implemented yet.
 
-## Foundation architecture
+## Current architecture
 
 ```text
 Browser
   |
   v
-React + TypeScript + Vite ----> FastAPI /api/v1/health/*
-                                      |
-                                      v
-                              PostgreSQL + pgvector
+React + TypeScript + Vite ----> FastAPI /api/v1
+                                  |        |
+                                  v        v
+                         PostgreSQL    protected PDF storage
+                              ^
+                              |
+                    deletion-only worker
 
 Host persistence:
 E:\DocIntelData\postgres
@@ -28,12 +32,13 @@ E:\DocIntelData\samples
 E:\DocIntelData\backups
 ```
 
-The application is a modular monolith. The API and future durable worker share
-one Python codebase and PostgreSQL system of record. The worker is deliberately
-deferred until the secure document lifecycle phase creates real work for it.
+The application is a modular monolith. The API and deletion worker share one
+Python codebase and PostgreSQL system of record. The worker only handles durable
+deletion jobs in this phase; the processing jobs created with uploads are not
+consumed yet.
 
-See [docs/architecture.md](docs/architecture.md) for the Phase 2 boundaries and
-readiness contract.
+See [docs/architecture.md](docs/architecture.md) for the Phase 3 boundaries,
+lifecycle invariants, and API contract.
 
 ## Prerequisites
 
@@ -81,12 +86,32 @@ equivalents instead.
 docker compose up --build
 ```
 
-The migration service runs once, then the API and web services start.
+The migration service runs once, then the API, deletion worker, and web services
+start.
 
 - Web foundation: <http://localhost:5173>
 - API documentation: <http://localhost:8000/docs>
 - Liveness: <http://localhost:8000/api/v1/health/live>
 - Readiness: <http://localhost:8000/api/v1/health/ready>
+
+## Document API
+
+All document routes are under `/api/v1/documents`:
+
+- `POST /` uploads exactly one PDF as the multipart `file` field and returns
+  HTTP 202.
+- `GET /` lists documents with cursor pagination, search, status filters, and
+  sorting.
+- `GET /{document_id}` returns document metadata.
+- `GET /{document_id}/status` returns compact lifecycle progress.
+- `GET /{document_id}/content` streams protected inline PDF content and
+  supports ETags and one byte range.
+- `DELETE /{document_id}` durably requests deletion and returns HTTP 202.
+
+Uploads default to a 25 MiB limit. They are streamed through a bounded buffer,
+validated for `.pdf`, `application/pdf`, and the `%PDF-` signature, hashed with
+SHA-256, and atomically finalized under a server-generated UUID key. The
+filename supplied by the client is retained only as sanitized display metadata.
 
 Stop the services without deleting persistent data:
 
@@ -107,6 +132,13 @@ python -m ruff format --check apps/api
 python -m ruff check apps/api
 python -m mypy apps/api/src apps/api/tests
 python -m pytest apps/api/tests/unit
+```
+
+Database-backed tests run against a migrated PostgreSQL/pgvector service:
+
+```powershell
+$env:DOCINTEL_RUN_INTEGRATION = "1"
+python -m pytest apps/api/tests/integration
 ```
 
 Frontend:
@@ -139,7 +171,7 @@ deterministic and makes no network or paid provider request.
 
 ## Current limitations
 
-This is intentionally a foundation release. It has no document or AI workflow,
-no worker, no authentication, and no production deployment configuration. The
-basic web page exists only to expose platform health while later phases are
-built.
+Uploaded documents remain `queued`; Phase 3 deliberately does not extract,
+inspect, chunk, embed, retrieve, or answer questions from them. The worker only
+performs deletion. Authentication, the PDF viewer, document-library UI, and
+production deployment configuration are also deferred.

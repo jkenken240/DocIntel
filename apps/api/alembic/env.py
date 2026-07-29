@@ -7,6 +7,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from docintel import models  # noqa: F401
 from docintel.core.config import get_settings
 from docintel.db.base import Base
 
