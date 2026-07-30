@@ -1,75 +1,70 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 
-import { fetchReadiness } from "./lib/api/health";
+import { AppShell } from "./components/AppShell";
+import { EmptyState } from "./components/Feedback";
+import { useRouter } from "./lib/router";
+import { AskPage } from "./pages/AskPage";
+import { DocumentDetailPage } from "./pages/DocumentDetailPage";
+import { DocumentsPage } from "./pages/DocumentsPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { QuestionPage } from "./pages/QuestionPage";
+
+function safeRouteId(value: string): string | null {
+  try {
+    const decoded = decodeURIComponent(value);
+    return /^[0-9a-f-]{36}$/i.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
 
 export function App() {
-  const readiness = useQuery({
-    queryKey: ["platform-readiness"],
-    queryFn: ({ signal }) => fetchReadiness(signal),
-    retry: false,
-    refetchInterval: 10_000,
-  });
+  const { pathname } = useRouter();
 
-  const status = readiness.data?.status ?? "not_ready";
+  let title = "Overview";
+  let content = <OverviewPage />;
 
-  return (
-    <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
-      <section
-        className="mx-auto max-w-3xl rounded-2xl border border-slate-800 bg-slate-900 p-8"
-        aria-labelledby="foundation-title"
-      >
-        <p className="text-sm font-semibold tracking-[0.18em] text-cyan-400 uppercase">
-          Phase 2
-        </p>
-        <h1 id="foundation-title" className="mt-3 text-4xl font-semibold">
-          DocIntel platform foundation
-        </h1>
-        <p className="mt-4 max-w-2xl text-slate-300">
-          The repository, database, migrations, API, and web toolchain are
-          connected. Document intelligence features begin in later approved
-          phases.
-        </p>
+  if (pathname === "/documents" || pathname === "/documents/") {
+    title = "Documents";
+    content = <DocumentsPage />;
+  } else if (pathname.startsWith("/documents/")) {
+    const documentId = safeRouteId(pathname.slice("/documents/".length));
+    title = "Document source";
+    content = documentId ? (
+      <DocumentDetailPage documentId={documentId} />
+    ) : (
+      <EmptyState
+        title="Document route is invalid"
+        message="Return to the library and choose a current document."
+      />
+    );
+  } else if (pathname === "/ask" || pathname === "/ask/") {
+    title = "Ask DocIntel";
+    content = <AskPage />;
+  } else if (pathname.startsWith("/questions/")) {
+    const questionId = safeRouteId(pathname.slice("/questions/".length));
+    title = "Grounded answer";
+    content = questionId ? (
+      <QuestionPage questionId={questionId} />
+    ) : (
+      <EmptyState
+        title="Question route is invalid"
+        message="Return to Ask DocIntel and submit a grounded question."
+      />
+    );
+  } else if (pathname !== "/") {
+    title = "Page not found";
+    content = (
+      <EmptyState
+        title="This workspace page does not exist"
+        message="Use the DocIntel navigation to return to a current workspace view."
+      />
+    );
+  }
 
-        <div
-          className="mt-8 rounded-xl border border-slate-700 bg-slate-950 p-5"
-          aria-live="polite"
-        >
-          <div className="flex items-center justify-between gap-4">
-            <h2 className="font-medium">Platform readiness</h2>
-            <span
-              className={
-                status === "ready"
-                  ? "rounded-full bg-emerald-400/15 px-3 py-1 text-sm text-emerald-300"
-                  : "rounded-full bg-amber-400/15 px-3 py-1 text-sm text-amber-200"
-              }
-            >
-              {readiness.isPending
-                ? "Checking"
-                : status === "ready"
-                  ? "Ready"
-                  : "Not ready"}
-            </span>
-          </div>
+  useEffect(() => {
+    document.title = `${title} · DocIntel`;
+  }, [title]);
 
-          {readiness.isError ? (
-            <p className="mt-4 text-sm text-rose-300">
-              The API could not be reached. Start the Docker Compose services
-              and retry.
-            </p>
-          ) : null}
-
-          {readiness.data ? (
-            <dl className="mt-4 grid gap-3 sm:grid-cols-2">
-              {Object.entries(readiness.data.checks).map(([name, check]) => (
-                <div key={name} className="rounded-lg bg-slate-900 px-4 py-3">
-                  <dt className="font-medium capitalize">{name}</dt>
-                  <dd className="mt-1 text-sm text-slate-400">{check.detail}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : null}
-        </div>
-      </section>
-    </main>
-  );
+  return <AppShell>{content}</AppShell>;
 }

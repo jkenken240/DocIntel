@@ -1,22 +1,10 @@
-export type ComponentStatus = "ready" | "not_ready";
-
-export interface ComponentCheck {
-  status: ComponentStatus;
-  detail: string;
-}
-
-export interface ReadinessResponse {
-  status: ComponentStatus;
-  checks: Record<string, ComponentCheck>;
-}
-
-const apiBaseUrl =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
+import { API_BASE_URL } from "./client";
+import type { ReadinessResponse } from "./contracts";
 
 export async function fetchReadiness(
   signal?: AbortSignal,
 ): Promise<ReadinessResponse> {
-  const response = await fetch(`${apiBaseUrl}/health/ready`, {
+  const response = await fetch(`${API_BASE_URL}/health/ready`, {
     headers: { Accept: "application/json" },
     signal,
   });

@@ -1,18 +1,21 @@
 # DocIntel
 
-DocIntel is a planned AI-powered business document intelligence workspace. The
-repository currently contains the Phase 5 grounded-answer backend: a
-PostgreSQL/pgvector system of record, durable lifecycle jobs, protected local
-PDF storage, deterministic processing, compatible-space retrieval, immutable
-evidence snapshots, structured citations, and claim-support verification.
+DocIntel is a professional local document-intelligence workspace. It combines a
+responsive React application with a PostgreSQL/pgvector system of record,
+durable lifecycle jobs, protected local PDF storage, deterministic processing,
+compatible-space retrieval, immutable evidence snapshots, structured
+citations, and claim-support verification.
 
-The dashboard, question workspace UI, PDF viewer, authentication, OCR, and the
-finished visual interface are intentionally not implemented yet.
+Phase 6 provides the complete browser workflow for upload, lifecycle
+observation, document operations, grounded questions, exact evidence review,
+and page-correct PDF navigation. Authentication, OCR, cloud deployment, and
+later-phase features remain intentionally deferred.
 
 ## Current architecture
 
 ```text
-Browser
+Browser workspace
+  Overview / Documents / Ask / Evidence + PDF
   |
   v
 React + TypeScript + Vite ----> FastAPI /api/v1
@@ -36,8 +39,8 @@ The application is a modular monolith. The API and lifecycle worker share one
 Python codebase and PostgreSQL system of record. The worker claims processing
 and deletion jobs durably with leases and PostgreSQL row locking.
 
-See [docs/architecture.md](docs/architecture.md) for the Phase 5 boundaries,
-lifecycle invariants, and API contract.
+See [docs/architecture.md](docs/architecture.md) for the Phase 6 boundaries,
+lifecycle invariants, frontend behavior, and API contract.
 
 ## Prerequisites
 
@@ -88,7 +91,7 @@ docker compose up --build
 The migration service runs once, then the API, lifecycle worker, and web
 services start.
 
-- Web foundation: <http://localhost:5173>
+- Document intelligence workspace: <http://localhost:5173>
 - API documentation: <http://localhost:8000/docs>
 - Liveness: <http://localhost:8000/api/v1/health/live>
 - Readiness: <http://localhost:8000/api/v1/health/ready>
@@ -129,6 +132,24 @@ Retrieval uses cosine distance only within one compatible active embedding
 space. Deterministic MMR, overlap suppression, and page/document caps select
 evidence. Exact source snapshots are validated again before structured claims,
 citations, and claim-verification results are committed.
+
+## Workspace routes
+
+- `/` shows truthful document counts, recent sources, health state, and
+  first-use guidance.
+- `/documents` provides multi-file queued upload, search, lifecycle filtering,
+  stable sorting, READY-source selection, retry, deletion, and inspection.
+- `/documents/{document_id}` presents lifecycle metadata and the protected PDF
+  viewer.
+- `/ask` submits a bounded question against all compatible READY documents or
+  an explicit source selection.
+- `/questions/{question_id}` restores the persisted answer, structured claims,
+  exact evidence, and citation-driven PDF page.
+
+The browser uses `VITE_API_BASE_URL` when provided and otherwise addresses the
+local API at `http://localhost:8000/api/v1`. Destructive requests have no hidden
+retry. Nonterminal document queries poll with a bounded interval and stop when
+the source becomes terminal or the view unmounts.
 
 Stop the services without deleting persistent data:
 
@@ -188,9 +209,11 @@ deterministic and makes no network or paid provider request.
 
 ## Current limitations
 
-Phase 5 provides backend retrieval and grounded answers but no question
-workspace UI or PDF citation viewer. Deterministic mock providers remain the
-default and make no network request. OpenAI-compatible adapters are available
-only when explicitly configured; repository validation uses mocked HTTP and
-makes no live or paid request. OCR, authentication, conversation memory, web
-search, agentic tools, and production deployment configuration remain deferred.
+Deterministic mock providers remain the default and make no network request.
+OpenAI-compatible adapters are available only when explicitly configured;
+repository validation uses mocked HTTP and makes no live or paid request.
+Exact PDF geometry is not stored, so citations navigate to the proven
+one-based page while the exact backend-validated excerpt remains visible in the
+evidence panel; the viewer does not guess at on-page highlights. OCR,
+authentication, conversation memory, web search, agentic tools, native apps,
+and production deployment configuration remain deferred.

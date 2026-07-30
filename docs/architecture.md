@@ -1,11 +1,12 @@
-# Phase 5 architecture
+# Phase 6 architecture
 
 ## Scope
 
-Phase 5 extends deterministic document processing with a grounded-answer
-backend. A normalized question retrieves only compatible `READY` chunks,
-captures immutable page-correct evidence, and becomes either a verified
-structured answer or a safe insufficient-evidence record.
+Phase 6 exposes the secure lifecycle and grounded-answer backend through one
+cohesive browser workspace. The frontend preserves the backend as the source of
+truth: a document is selectable only when it is `READY`, an answer is shown
+only when the persisted result is `answered`, and every visual citation comes
+from structured claim and evidence records.
 
 The implemented runtime services are:
 
@@ -14,13 +15,13 @@ The implemented runtime services are:
 - `api`: FastAPI health, document lifecycle, question, retrieval, and grounded
   answer APIs.
 - `worker`: a durable processing and deletion job consumer.
-- `web`: a minimal React/Vite shell that reports API platform health.
+- `web`: the responsive React/Vite document intelligence workspace.
 
 ## Boundaries
 
 ```mermaid
 flowchart LR
-    Browser["Browser"] --> Web["React + Vite foundation"]
+    Browser["Browser"] --> Web["React workspace: overview, documents, ask, evidence, PDF"]
     Web --> API["FastAPI /api/v1"]
     API --> DB[("PostgreSQL + pgvector")]
     API --> Storage["Protected PDF storage"]
@@ -36,7 +37,9 @@ flowchart LR
 - `apps/api` owns configuration, database connectivity, migrations, health and
   document contracts, protected storage, deterministic processing, and durable
   deletion.
-- `apps/web` owns the browser runtime and typed health client.
+- `apps/web` owns the browser runtime, centralized typed API client, bounded
+  upload queue, lifecycle polling, grounded-answer presentation, and PDF.js
+  viewer.
 - PostgreSQL is the system of record, durable lifecycle-job queue, immutable
   evidence store, and grounded-answer audit log.
 - Storage paths and keys are trusted server values, never client filenames.
@@ -225,13 +228,49 @@ structured evidence, claims, citations, retrieval/provider configuration
 identities, and creation time without storage paths, secrets, raw provider
 payloads, or chain-of-thought.
 
+## Browser workspace
+
+The frontend uses a small History API router to retain the existing Vite
+foundation without introducing a routing framework solely for three primary
+destinations:
+
+```text
+/                            workspace overview
+/documents                   upload and document library
+/documents/{document_id}     document detail and protected PDF
+/ask                         grounded-question composer
+/questions/{question_id}     persisted answer, evidence, and PDF
+```
+
+React Query owns request cancellation, bounded nonterminal polling, and
+predictable cache invalidation. The upload queue accepts multiple selections
+but preserves the one-PDF backend contract by sending at most two independent
+requests concurrently. Client extension and MIME checks are early feedback
+only; the backend remains authoritative.
+
+The question view derives claim markers from structured citation rows.
+Selecting a claim exposes its citations; selecting a citation retains the exact
+immutable excerpt and loads the correct document and original one-based page in
+the adjacent PDF.js viewer. Because Phase 5 does not persist PDF geometry, the
+UI does not guess visual text coordinates.
+
+Document deletion is explicitly confirmed and warns that dependent grounded
+answers may be removed. Insufficient evidence is a deliberate non-answer state,
+never an error fallback or fabricated response.
+
+The visual system uses dark graphite and ink surfaces with restrained cyan and
+violet accents. Desktop navigation becomes a compact mobile header and bottom
+navigation; document rows, question/evidence splits, dialogs, and the viewer
+adapt at tablet and phone widths. Semantic controls, visible focus, status live
+regions, and reduced-motion rules cover the primary accessible workflow.
+
 ## Deferred work
 
-The following are not part of Phase 5:
+The following are not part of Phase 6:
 
 - OCR
 - live-provider validation or paid AI requests
-- document library, dashboard, question workspace, or PDF viewer
-- clickable visual citations, streaming chat, or cinematic UI
+- multi-turn or streaming chat
+- editable citations, annotations, collaboration, or public sharing
 - general web search, conversation memory, or agentic tool use
-- production deployment and authentication
+- provider configuration UI, production deployment, and authentication
