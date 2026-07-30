@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 
+import httpx
 import pytest
 
 from docintel.processing.embeddings import (
     DeterministicMockEmbeddingProvider,
     EmbeddingSpaceIdentity,
+    OpenAICompatibleEmbeddingProvider,
     validate_embedding_batch,
 )
 from docintel.processing.errors import ProcessingError
@@ -90,3 +92,33 @@ def test_embedding_batch_validation_rejects_space_mismatch() -> None:
         )
 
     assert raised.value.code == "EMBEDDING_SPACE_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_embeddings_use_mocked_http_only() -> None:
+    vector = [0.0] * 1536
+    vector[7] = 1.0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/embeddings"
+        assert request.headers["authorization"] == "Bearer test-only-key"
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": vector}]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleEmbeddingProvider(
+            base_url="https://provider.invalid/v1",
+            api_key="test-only-key",
+            model="fictional-embedding",
+            dimensions=1536,
+            timeout_seconds=1,
+            maximum_response_bytes=64 * 1024,
+            client=client,
+        )
+        result = await provider.embed(["fictional input"])
+
+    assert result == [vector]
+    assert provider.identity.provider == "openai_compatible"
+    assert provider.identity.model == "fictional-embedding"

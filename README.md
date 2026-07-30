@@ -1,12 +1,12 @@
 # DocIntel
 
 DocIntel is a planned AI-powered business document intelligence workspace. The
-repository currently contains the Phase 4 deterministic processing pipeline: a
+repository currently contains the Phase 5 grounded-answer backend: a
 PostgreSQL/pgvector system of record, durable lifecycle jobs, protected local
-PDF storage, deterministic PyMuPDF extraction and chunking, offline mock
-embeddings, a FastAPI document API, and a lifecycle worker.
+PDF storage, deterministic processing, compatible-space retrieval, immutable
+evidence snapshots, structured citations, and claim-support verification.
 
-Vector retrieval, question answering, citations, OCR, PDF viewer UI, and the
+The dashboard, question workspace UI, PDF viewer, authentication, OCR, and the
 finished visual interface are intentionally not implemented yet.
 
 ## Current architecture
@@ -16,13 +16,13 @@ Browser
   |
   v
 React + TypeScript + Vite ----> FastAPI /api/v1
-                                  |        |
-                                  v        v
-                         PostgreSQL    protected PDF storage
-                              ^
-                              |
-                  lifecycle worker
-             (processing + deletion)
+                              /       |       \
+                             v        v        v
+                      PostgreSQL  retrieval  protected PDF storage
+                           ^          |
+                           |          v
+                  lifecycle worker  grounded providers
+             (processing + deletion) (mock by default)
 
 Host persistence:
 E:\DocIntelData\postgres
@@ -36,7 +36,7 @@ The application is a modular monolith. The API and lifecycle worker share one
 Python codebase and PostgreSQL system of record. The worker claims processing
 and deletion jobs durably with leases and PostgreSQL row locking.
 
-See [docs/architecture.md](docs/architecture.md) for the Phase 4 boundaries,
+See [docs/architecture.md](docs/architecture.md) for the Phase 5 boundaries,
 lifecycle invariants, and API contract.
 
 ## Prerequisites
@@ -117,6 +117,19 @@ The worker validates PDFs with PyMuPDF, preserves one-based pages, produces
 page-contained deterministic character chunks, and writes normalized
 1,536-dimensional mock vectors without network access.
 
+Question routes are under `/api/v1/questions`:
+
+- `POST /api/v1/questions` accepts a bounded normalized question and optional
+  selected document UUIDs, then returns a persisted grounded or
+  insufficient-evidence result with HTTP 201.
+- `GET /api/v1/questions/{question_id}` returns its stable evidence, claims,
+  citations, provider identities, and audit metadata.
+
+Retrieval uses cosine distance only within one compatible active embedding
+space. Deterministic MMR, overlap suppression, and page/document caps select
+evidence. Exact source snapshots are validated again before structured claims,
+citations, and claim-verification results are committed.
+
 Stop the services without deleting persistent data:
 
 ```powershell
@@ -175,8 +188,9 @@ deterministic and makes no network or paid provider request.
 
 ## Current limitations
 
-Phase 4 deliberately stops at `READY` documents with pages, chunks, and mock
-vectors. It does not perform vector retrieval, semantic search, question
-answering, evidence selection, citation generation, OCR, or live AI-provider
-calls. Authentication, the PDF viewer, document-library UI, and production
-deployment configuration are also deferred.
+Phase 5 provides backend retrieval and grounded answers but no question
+workspace UI or PDF citation viewer. Deterministic mock providers remain the
+default and make no network request. OpenAI-compatible adapters are available
+only when explicitly configured; repository validation uses mocked HTTP and
+makes no live or paid request. OCR, authentication, conversation memory, web
+search, agentic tools, and production deployment configuration remain deferred.

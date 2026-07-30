@@ -1,16 +1,18 @@
-# Phase 4 architecture
+# Phase 5 architecture
 
 ## Scope
 
-Phase 4 extends the secure PDF lifecycle with deterministic local processing. A
-valid uploaded PDF can reach `READY` with one-based pages, page-contained
-chunks, and normalized offline mock vectors.
+Phase 5 extends deterministic document processing with a grounded-answer
+backend. A normalized question retrieves only compatible `READY` chunks,
+captures immutable page-correct evidence, and becomes either a verified
+structured answer or a safe insufficient-evidence record.
 
 The implemented runtime services are:
 
 - `db`: PostgreSQL 17 with pgvector.
 - `migrate`: a one-shot Alembic upgrade using the backend image.
-- `api`: FastAPI health, upload, document metadata, content, and deletion APIs.
+- `api`: FastAPI health, document lifecycle, question, retrieval, and grounded
+  answer APIs.
 - `worker`: a durable processing and deletion job consumer.
 - `web`: a minimal React/Vite shell that reports API platform health.
 
@@ -26,6 +28,8 @@ flowchart LR
     Worker --> Storage
     Worker --> PyMuPDF["PyMuPDF validation and extraction"]
     Worker --> Mock["Offline deterministic mock embeddings"]
+    API --> Retrieval["Compatible cosine retrieval + deterministic MMR"]
+    Retrieval --> Providers["Grounded answer + claim verifier"]
     Migrate["Alembic migration service"] --> DB
 ```
 
@@ -33,10 +37,12 @@ flowchart LR
   document contracts, protected storage, deterministic processing, and durable
   deletion.
 - `apps/web` owns the browser runtime and typed health client.
-- PostgreSQL is the system of record and durable lifecycle-job queue.
+- PostgreSQL is the system of record, durable lifecycle-job queue, immutable
+  evidence store, and grounded-answer audit log.
 - Storage paths and keys are trusted server values, never client filenames.
-- The provider is set to the offline deterministic `mock`; readiness validates
-  configuration without making a provider request.
+- Offline deterministic mock providers are the default; readiness validates
+  configuration without making a provider request. OpenAI-compatible adapters
+  are disabled unless explicitly configured.
 
 ## Persistent storage
 
@@ -74,7 +80,7 @@ process can respond.
 
 Readiness is HTTP 200 only when every component is ready; otherwise it is HTTP
 503. Provider readiness never calls an external model. For the deterministic
-mock selection it verifies the configured embedding dimension. For a future
+mock selection it verifies the configured embedding dimension. For an
 OpenAI-compatible selection it checks required configuration values and
 structured-output capability without using credentials.
 
@@ -113,8 +119,7 @@ Revision `20260730_0003` adds only the deterministic processing aggregate:
   space, with an HNSW cosine index.
 
 Documents and jobs gain processing revision, stage progress, retryability,
-lease heartbeat, and stage/processing timestamps. No retrieval, question,
-answer, evidence, claim, or citation schema exists.
+lease heartbeat, and stage/processing timestamps.
 
 ## Deterministic processing
 
@@ -149,6 +154,49 @@ validated before persistence.
 revalidated and the database proves complete pages, chunks, vectors, revision,
 ordering, and cancellation invariants.
 
+Revision `20260730_0004` adds only the grounded-answer audit aggregate:
+
+- `questions` stores normalized input, selected document UUIDs, deterministic
+  retrieval configuration, embedding-space identity, provider identities, and
+  explicit answered or insufficient-evidence status.
+- `evidence_snapshots` stores the exact display filename, document revision,
+  one-based page, chunk, page-relative offsets, source text and hashes, score,
+  rank, and embedding identity.
+- `answers`, `answer_claims`, and `citations` keep answer text, exact factual
+  claim spans, and normalized claim-to-evidence links separate.
+- `claim_verifications` and `claim_verification_evidence` store bounded support
+  outcomes and the exact retrieved evidence used by the verifier.
+
+Evidence snapshots reject database updates. A document-delete trigger removes
+every question aggregate that depends on that document before its pages and
+chunks cascade away, so no valid-looking answer can retain broken citations.
+
+## Retrieval and grounding
+
+The question embedding identity must exactly match the active embedding space:
+provider, model, 1,536 dimensions, cosine metric, and configuration hash.
+Explicit document filters fail with a safe conflict unless every document is
+`READY` in the same compatible space.
+
+PostgreSQL supplies a bounded cosine-ranked candidate pool. Application
+selection applies a similarity threshold, stable identifier tie-breaking,
+deterministic maximal-marginal-relevance scoring, overlapping-chunk
+suppression, and per-page/per-document caps. Below-threshold chunks are never
+added merely to fill the result.
+
+Evidence is inserted before provider execution and treated as untrusted source
+data. Providers return schema-validated answer text, exact claim spans, and
+evidence UUIDs rather than free-form citation markers. The API then:
+
+1. validates every answer span and evidence reference;
+2. rechecks filenames, processing revisions, pages, chunks, offsets, text,
+   hashes, active vectors, and source eligibility under document locks;
+3. runs structured claim-support verification over retrieved evidence only;
+4. persists an answer only when every material claim is supported.
+
+No rejected answer or raw provider payload is stored. Validation, provider, or
+verification failures produce a bounded `insufficient_evidence` reason instead.
+
 ## API behavior
 
 `POST /api/v1/documents` accepts one multipart `file`. The API sanitizes the
@@ -170,14 +218,20 @@ safe error is classified retryable. It transactionally removes stale derived
 rows, increments the processing revision, and creates one new durable
 processing job. Permanent PDF validation failures cannot be retried.
 
+`POST /api/v1/questions` accepts a bounded normalized question and optional
+document UUIDs. It returns HTTP 201 with a persisted answered or
+insufficient-evidence result. `GET /api/v1/questions/{question_id}` returns
+structured evidence, claims, citations, retrieval/provider configuration
+identities, and creation time without storage paths, secrets, raw provider
+payloads, or chain-of-thought.
+
 ## Deferred work
 
-The following are not part of Phase 4:
+The following are not part of Phase 5:
 
-- vector retrieval, semantic search, or ranking
-- answer generation or citation validation
-- evidence, claim, question, answer, or citation APIs
-- live or OpenAI-compatible providers
 - OCR
-- document library, dashboard, workspace, or PDF viewer
+- live-provider validation or paid AI requests
+- document library, dashboard, question workspace, or PDF viewer
+- clickable visual citations, streaming chat, or cinematic UI
+- general web search, conversation memory, or agentic tool use
 - production deployment and authentication

@@ -109,6 +109,12 @@ class Chunk(Base):
             "page_ordinal",
             name="uq_chunks_page_ordinal",
         ),
+        UniqueConstraint(
+            "id",
+            "page_id",
+            "document_id",
+            name="uq_chunks_id_page_document",
+        ),
         Index("ix_chunks_document_id", "document_id"),
         Index("ix_chunks_page_id", "page_id"),
     )

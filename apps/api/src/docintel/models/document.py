@@ -81,6 +81,10 @@ class Document(Base):
         ),
         Index("ix_documents_status_created_at", "status", "created_at"),
         Index("ix_documents_created_at", "created_at"),
+        Index(
+            "ix_documents_active_embedding_space_id",
+            "active_embedding_space_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

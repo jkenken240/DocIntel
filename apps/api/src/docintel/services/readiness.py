@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from docintel.core.config import Settings
 from docintel.schemas.health import ComponentCheck, ReadinessResponse
 
-MIGRATION_HEAD = "20260730_0003"
+MIGRATION_HEAD = "20260730_0004"
 logger = logging.getLogger(__name__)
 
 

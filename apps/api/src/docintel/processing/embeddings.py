@@ -8,6 +8,10 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
+
+from docintel.intelligence.openai_compatible import OpenAICompatibleClient
+from docintel.intelligence.providers import ProviderError
 from docintel.processing.errors import ProcessingError
 
 TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -99,6 +103,91 @@ class DeterministicMockEmbeddingProvider:
                 retryable=False,
             )
         return [value / norm for value in vector]
+
+
+class OpenAICompatibleEmbeddingProvider:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        dimensions: int,
+        timeout_seconds: float,
+        maximum_response_bytes: int,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        payload = {
+            "base_url": base_url.rstrip("/"),
+            "dimensions": dimensions,
+            "distance_metric": "cosine",
+            "model": model,
+            "provider": "openai_compatible",
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self._identity = EmbeddingSpaceIdentity(
+            provider="openai_compatible",
+            model=model,
+            dimensions=dimensions,
+            distance_metric="cosine",
+            configuration_hash=hashlib.sha256(encoded).hexdigest(),
+        )
+        self.model = model
+        self.transport = OpenAICompatibleClient(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            maximum_response_bytes=maximum_response_bytes,
+            client=client,
+        )
+
+    @property
+    def identity(self) -> EmbeddingSpaceIdentity:
+        return self._identity
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        try:
+            payload = await self.transport.post_json(
+                "/embeddings",
+                {
+                    "model": self.model,
+                    "input": texts,
+                    "dimensions": self.identity.dimensions,
+                },
+            )
+            raw_data = payload.get("data")
+            if not isinstance(raw_data, list):
+                raise TypeError
+            indexed: list[tuple[int, list[float]]] = []
+            for item in raw_data:
+                if not isinstance(item, dict):
+                    raise TypeError
+                index = item.get("index")
+                embedding = item.get("embedding")
+                if not isinstance(index, int) or not isinstance(embedding, list):
+                    raise TypeError
+                indexed.append((index, [float(value) for value in embedding]))
+            indexed.sort(key=lambda value: value[0])
+            if [index for index, _ in indexed] != list(range(len(indexed))):
+                raise TypeError
+            return [embedding for _, embedding in indexed]
+        except ProviderError as exception:
+            raise ProcessingError(
+                exception.code,
+                exception.safe_message,
+                retryable=exception.code
+                in {
+                    "PROVIDER_HTTP_ERROR",
+                    "PROVIDER_TIMEOUT",
+                    "PROVIDER_TRANSPORT_ERROR",
+                },
+            ) from exception
+        except (TypeError, ValueError) as exception:
+            raise ProcessingError(
+                "EMBEDDING_PROVIDER_MALFORMED",
+                "The embedding provider returned malformed data.",
+                retryable=False,
+            ) from exception
 
 
 def validate_embedding_batch(

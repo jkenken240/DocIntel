@@ -15,6 +15,14 @@ def test_mock_provider_is_the_foundation_default() -> None:
         settings.chunk_max_chars,
         settings.chunk_overlap_chars,
     ) == (1400, 1800, 200)
+    assert settings.mock_answer_model == "mock-grounded-v1"
+    assert settings.mock_verifier_model == "mock-claim-verifier-v1"
+    assert (
+        settings.retrieval_candidate_pool,
+        settings.retrieval_evidence_count,
+        settings.retrieval_max_chunks_per_page,
+        settings.retrieval_max_chunks_per_document,
+    ) == (40, 6, 2, 3)
 
 
 def test_storage_paths_are_fully_configurable(tmp_path: Path) -> None:

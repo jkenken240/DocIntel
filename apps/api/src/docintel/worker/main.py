@@ -8,7 +8,7 @@ import uuid
 from docintel.core.config import get_settings
 from docintel.core.logging import configure_logging
 from docintel.db.session import create_engine, create_session_factory
-from docintel.processing.embeddings import DeterministicMockEmbeddingProvider
+from docintel.intelligence.factory import create_embedding_provider
 from docintel.processing.processor import ProcessingProcessor
 from docintel.services.deletion import DeletionProcessor
 from docintel.storage.local import LocalDocumentStorage
@@ -23,12 +23,7 @@ async def run_worker() -> None:
     session_factory = create_session_factory(engine)
     storage = LocalDocumentStorage(settings.uploads_path)
     worker_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:12]}"
-    if settings.ai_provider != "mock":
-        raise RuntimeError("Phase 4 processing supports only the deterministic mock provider.")
-    embedding_provider = DeterministicMockEmbeddingProvider(
-        model=settings.mock_embedding_model,
-        dimensions=settings.embedding_dimensions,
-    )
+    embedding_provider = create_embedding_provider(settings)
     deletion_processor = DeletionProcessor(
         session_factory,
         storage,
