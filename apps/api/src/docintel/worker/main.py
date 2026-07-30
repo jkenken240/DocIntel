@@ -8,6 +8,8 @@ import uuid
 from docintel.core.config import get_settings
 from docintel.core.logging import configure_logging
 from docintel.db.session import create_engine, create_session_factory
+from docintel.processing.embeddings import DeterministicMockEmbeddingProvider
+from docintel.processing.processor import ProcessingProcessor
 from docintel.services.deletion import DeletionProcessor
 from docintel.storage.local import LocalDocumentStorage
 
@@ -21,18 +23,32 @@ async def run_worker() -> None:
     session_factory = create_session_factory(engine)
     storage = LocalDocumentStorage(settings.uploads_path)
     worker_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:12]}"
-    processor = DeletionProcessor(
+    if settings.ai_provider != "mock":
+        raise RuntimeError("Phase 4 processing supports only the deterministic mock provider.")
+    embedding_provider = DeterministicMockEmbeddingProvider(
+        model=settings.mock_embedding_model,
+        dimensions=settings.embedding_dimensions,
+    )
+    deletion_processor = DeletionProcessor(
         session_factory,
         storage,
         settings,
         worker_id=worker_id,
     )
-    logger.info("Deletion worker started.", extra={"worker_id": worker_id})
+    processing_processor = ProcessingProcessor(
+        session_factory,
+        storage,
+        settings,
+        embedding_provider,
+        worker_id=worker_id,
+    )
+    logger.info("Document lifecycle worker started.", extra={"worker_id": worker_id})
 
     try:
         while True:
-            processed = await processor.run_once()
-            if not processed:
+            deleted = await deletion_processor.run_once()
+            processed = await processing_processor.run_once()
+            if not deleted and not processed:
                 await asyncio.sleep(settings.worker_poll_seconds)
     finally:
         await engine.dispose()

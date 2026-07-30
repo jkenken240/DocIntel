@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from docintel.db.base import Base
-from docintel.models.document import enum_values
+from docintel.models.document import DocumentStage, ProgressUnit, enum_values
 
 if TYPE_CHECKING:
     from docintel.models.document import Document
@@ -50,6 +50,14 @@ class DocumentJob(Base):
         CheckConstraint(
             "progress_total IS NULL OR progress_total >= 0",
             name="ck_document_jobs_progress_total",
+        ),
+        CheckConstraint(
+            "progress_total IS NULL OR progress_completed <= progress_total",
+            name="ck_document_jobs_progress_within_total",
+        ),
+        CheckConstraint(
+            "processing_revision > 0",
+            name="ck_document_jobs_processing_revision_positive",
         ),
         Index(
             "uq_document_jobs_active_kind",
@@ -84,6 +92,11 @@ class DocumentJob(Base):
     )
     attempts: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     max_attempts: Mapped[int] = mapped_column(nullable=False, default=3, server_default="3")
+    processing_revision: Mapped[int] = mapped_column(
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -104,8 +117,26 @@ class DocumentJob(Base):
         server_default="0",
     )
     progress_total: Mapped[int | None] = mapped_column(BigInteger)
+    progress_unit: Mapped[ProgressUnit | None] = mapped_column(
+        Enum(
+            ProgressUnit,
+            name="progress_unit",
+            values_callable=enum_values,
+        )
+    )
+    stage: Mapped[DocumentStage | None] = mapped_column(
+        Enum(
+            DocumentStage,
+            name="document_stage",
+            values_callable=enum_values,
+        )
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
+    failure_retryable: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

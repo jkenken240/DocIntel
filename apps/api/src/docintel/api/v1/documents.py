@@ -180,6 +180,19 @@ async def get_document_content(
     )
 
 
+@router.post(
+    "/{document_id}/retry",
+    response_model=DocumentEnvelope,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_document_processing(
+    document_id: uuid.UUID,
+    request: Request,
+) -> DocumentEnvelope:
+    document = await get_document_service(request).retry_processing(document_id)
+    return DocumentEnvelope(document=DocumentDetail.from_document(document))
+
+
 @router.delete(
     "/{document_id}",
     response_model=DocumentEnvelope,

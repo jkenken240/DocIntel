@@ -33,6 +33,16 @@ class Settings(BaseSettings):
 
     upload_max_bytes: PositiveInt = 25 * 1024 * 1024
     upload_chunk_bytes: PositiveInt = 64 * 1024
+    pdf_max_pages: PositiveInt = 500
+    processing_version: str = "phase4-v1"
+    processing_job_max_attempts: PositiveInt = 3
+    processing_retry_base_seconds: NonNegativeInt = 2
+    embedding_batch_size: PositiveInt = 32
+    mock_embedding_model: str = "mock-hash-v1"
+    chunk_target_chars: PositiveInt = 1400
+    chunk_max_chars: PositiveInt = 1800
+    chunk_overlap_chars: NonNegativeInt = 200
+    chunker_version: str = "deterministic-char-v1"
     deletion_job_max_attempts: PositiveInt = 3
     deletion_retry_base_seconds: NonNegativeInt = 5
     worker_poll_seconds: PositiveInt = 1
@@ -54,6 +64,18 @@ class Settings(BaseSettings):
             raise ValueError("upload_chunk_bytes must be at least 5 bytes")
         if self.upload_chunk_bytes > self.upload_max_bytes:
             raise ValueError("upload_chunk_bytes cannot exceed upload_max_bytes")
+        if self.chunk_target_chars > self.chunk_max_chars:
+            raise ValueError("chunk_target_chars cannot exceed chunk_max_chars")
+        if self.chunk_overlap_chars >= self.chunk_target_chars:
+            raise ValueError("chunk_overlap_chars must be smaller than chunk_target_chars")
+        if self.embedding_dimensions != 1536:
+            raise ValueError("Phase 4 requires exactly 1536 embedding dimensions")
+        if not self.processing_version.strip():
+            raise ValueError("processing_version is required")
+        if not self.chunker_version.strip():
+            raise ValueError("chunker_version is required")
+        if not self.mock_embedding_model.strip():
+            raise ValueError("mock_embedding_model is required")
         return self
 
     @property

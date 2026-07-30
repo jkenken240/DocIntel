@@ -8,6 +8,13 @@ def test_mock_provider_is_the_foundation_default() -> None:
 
     assert settings.ai_provider == "mock"
     assert settings.embedding_dimensions == 1536
+    assert settings.mock_embedding_model == "mock-hash-v1"
+    assert settings.pdf_max_pages == 500
+    assert (
+        settings.chunk_target_chars,
+        settings.chunk_max_chars,
+        settings.chunk_overlap_chars,
+    ) == (1400, 1800, 200)
 
 
 def test_storage_paths_are_fully_configurable(tmp_path: Path) -> None:

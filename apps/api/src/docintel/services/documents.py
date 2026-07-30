@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import ColumnElement, and_, asc, desc, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, asc, delete, desc, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
 from docintel.core.config import Settings
@@ -20,6 +20,7 @@ from docintel.db.session import SessionFactory
 from docintel.models import (
     Document,
     DocumentJob,
+    DocumentPage,
     DocumentStage,
     DocumentStatus,
     JobKind,
@@ -200,12 +201,15 @@ class DocumentService:
             sha256=stored.sha256,
             status=DocumentStatus.QUEUED,
             stage=DocumentStage.QUEUED,
+            processing_revision=1,
+            processing_version=self.settings.processing_version,
         )
         job = DocumentJob(
             document_id=document_id,
             kind=JobKind.PROCESSING,
             status=JobStatus.QUEUED,
-            max_attempts=3,
+            max_attempts=self.settings.processing_job_max_attempts,
+            processing_revision=1,
         )
 
         try:
@@ -403,6 +407,82 @@ class DocumentService:
                             available_at=now,
                         )
                     )
+                await session.flush()
+                return document
+
+    async def retry_processing(self, document_id: uuid.UUID) -> Document:
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            async with session.begin():
+                document = await session.scalar(
+                    select(Document).where(Document.id == document_id).with_for_update()
+                )
+                if document is None:
+                    raise self._not_found()
+                if document.status != DocumentStatus.FAILED:
+                    raise ProblemException(
+                        status_code=409,
+                        code="DOCUMENT_RETRY_NOT_ALLOWED",
+                        title="Document cannot be retried",
+                        detail="Only failed documents can be retried.",
+                    )
+                if document.error_retryable is not True:
+                    raise ProblemException(
+                        status_code=409,
+                        code="DOCUMENT_NOT_RETRYABLE",
+                        title="Document failure is permanent",
+                        detail="This document failed permanent validation and cannot be retried.",
+                    )
+
+                active_job = await session.scalar(
+                    select(DocumentJob)
+                    .where(
+                        DocumentJob.document_id == document_id,
+                        DocumentJob.kind == JobKind.PROCESSING,
+                        DocumentJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                    )
+                    .with_for_update()
+                )
+                if active_job is not None:
+                    raise ProblemException(
+                        status_code=409,
+                        code="PROCESSING_JOB_ALREADY_ACTIVE",
+                        title="Processing is already active",
+                        detail="The document already has an active processing job.",
+                    )
+
+                await session.execute(
+                    delete(DocumentPage).where(DocumentPage.document_id == document_id)
+                )
+                document.processing_revision += 1
+                document.processing_version = self.settings.processing_version
+                document.status = DocumentStatus.QUEUED
+                document.stage = DocumentStage.QUEUED
+                document.stage_started_at = now
+                document.progress_completed = 0
+                document.progress_total = None
+                document.progress_unit = None
+                document.page_count = 0
+                document.text_page_count = 0
+                document.chunk_count = 0
+                document.pdf_metadata = {}
+                document.active_embedding_space_id = None
+                document.processing_started_at = None
+                document.processing_completed_at = None
+                document.error_code = None
+                document.error_message = None
+                document.error_retryable = None
+                document.updated_at = now
+                session.add(
+                    DocumentJob(
+                        document_id=document_id,
+                        kind=JobKind.PROCESSING,
+                        status=JobStatus.QUEUED,
+                        max_attempts=self.settings.processing_job_max_attempts,
+                        processing_revision=document.processing_revision,
+                        available_at=now,
+                    )
+                )
                 await session.flush()
                 return document
 

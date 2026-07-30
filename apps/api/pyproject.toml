@@ -10,8 +10,10 @@ requires-python = ">=3.13"
 dependencies = [
   "alembic>=1.16,<2",
   "fastapi>=0.116,<1",
+  "pgvector>=0.4,<1",
   "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.10,<3",
+  "PyMuPDF>=1.26,<2",
   "python-multipart>=0.0.20,<1",
   "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
@@ -53,7 +55,8 @@ strict = true
 files = ["src", "tests"]
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
+untyped_calls_exclude = ["pymupdf"]
 
 [[tool.mypy.overrides]]
-module = ["alembic.*"]
+module = ["alembic.*", "fitz.*", "pgvector.*", "pymupdf", "pymupdf.*"]
 ignore_missing_imports = true

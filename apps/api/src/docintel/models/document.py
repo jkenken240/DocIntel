@@ -7,20 +7,24 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
+    ForeignKey,
     Index,
     String,
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from docintel.db.base import Base
 
 if TYPE_CHECKING:
+    from docintel.models.derived import DocumentPage
+    from docintel.models.embedding import EmbeddingSpace
     from docintel.models.job import DocumentJob
 
 
@@ -60,8 +64,21 @@ class Document(Base):
             "progress_total IS NULL OR progress_total >= 0",
             name="ck_documents_progress_total",
         ),
+        CheckConstraint(
+            "progress_total IS NULL OR progress_completed <= progress_total",
+            name="ck_documents_progress_within_total",
+        ),
         CheckConstraint("page_count >= 0", name="ck_documents_page_count"),
+        CheckConstraint("text_page_count >= 0", name="ck_documents_text_page_count"),
+        CheckConstraint(
+            "text_page_count <= page_count",
+            name="ck_documents_text_page_count_within_total",
+        ),
         CheckConstraint("chunk_count >= 0", name="ck_documents_chunk_count"),
+        CheckConstraint(
+            "processing_revision > 0",
+            name="ck_documents_processing_revision_positive",
+        ),
         Index("ix_documents_status_created_at", "status", "created_at"),
         Index("ix_documents_created_at", "created_at"),
     )
@@ -111,9 +128,39 @@ class Document(Base):
         )
     )
     page_count: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    text_page_count: Mapped[int] = mapped_column(
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     chunk_count: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    processing_revision: Mapped[int] = mapped_column(
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    processing_version: Mapped[str] = mapped_column(
+        String(80),
+        nullable=False,
+        default="phase4-v1",
+        server_default="phase4-v1",
+    )
+    pdf_metadata: Mapped[dict[str, str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    active_embedding_space_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("embedding_spaces.id", ondelete="RESTRICT"),
+    )
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
+    error_retryable: Mapped[bool | None] = mapped_column(Boolean)
+    stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deletion_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -132,3 +179,9 @@ class Document(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    pages: Mapped[list[DocumentPage]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    active_embedding_space: Mapped[EmbeddingSpace | None] = relationship(back_populates="documents")
