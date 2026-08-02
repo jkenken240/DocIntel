@@ -1,5 +1,29 @@
 name: docintel
 
+x-api-image: &api-image
+  image: ${DOCINTEL_API_IMAGE:-docintel-api:local}
+
+x-api-environment: &api-environment
+  DOCINTEL_ENVIRONMENT: production
+  DOCINTEL_LOG_LEVEL: ${DOCINTEL_LOG_LEVEL:-INFO}
+  DOCINTEL_DATABASE_URL: postgresql+psycopg://${DOCINTEL_POSTGRES_USER}:${DOCINTEL_POSTGRES_PASSWORD}@db:5432/${DOCINTEL_POSTGRES_DB}
+  DOCINTEL_UPLOADS_PATH: /data/uploads
+  DOCINTEL_PROCESSED_PATH: /data/processed
+  DOCINTEL_SAMPLES_PATH: /data/samples
+  DOCINTEL_BACKUPS_PATH: /data/backups
+  DOCINTEL_AI_PROVIDER: ${DOCINTEL_AI_PROVIDER:-mock}
+  DOCINTEL_EMBEDDING_DIMENSIONS: ${DOCINTEL_EMBEDDING_DIMENSIONS:-1536}
+  DOCINTEL_AI_BASE_URL: ${DOCINTEL_AI_BASE_URL:-}
+  DOCINTEL_AI_API_KEY: ${DOCINTEL_AI_API_KEY:-}
+  DOCINTEL_AI_CHAT_MODEL: ${DOCINTEL_AI_CHAT_MODEL:-}
+  DOCINTEL_AI_EMBEDDING_MODEL: ${DOCINTEL_AI_EMBEDDING_MODEL:-}
+  DOCINTEL_AI_STRUCTURED_OUTPUT: ${DOCINTEL_AI_STRUCTURED_OUTPUT:-true}
+  DOCINTEL_AI_TIMEOUT_SECONDS: ${DOCINTEL_AI_TIMEOUT_SECONDS:-20}
+  DOCINTEL_AI_MAX_RESPONSE_BYTES: ${DOCINTEL_AI_MAX_RESPONSE_BYTES:-65536}
+  DOCINTEL_PROCESSING_VERSION: ${DOCINTEL_PROCESSING_VERSION:-phase4-v1}
+  DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS: ${DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS:-3}
+  DOCINTEL_DELETION_JOB_MAX_ATTEMPTS: ${DOCINTEL_DELETION_JOB_MAX_ATTEMPTS:-3}
+
 services:
   db:
     image: pgvector/pgvector:0.8.1-pg17
@@ -8,10 +32,10 @@ services:
       POSTGRES_PASSWORD: ${DOCINTEL_POSTGRES_PASSWORD}
       POSTGRES_DB: ${DOCINTEL_POSTGRES_DB}
     ports:
-      - "${DOCINTEL_POSTGRES_PORT:-5432}:5432"
+      - "${DOCINTEL_BIND_ADDRESS:-127.0.0.1}:${DOCINTEL_POSTGRES_PORT:-5432}:5432"
     volumes:
       - type: bind
-        source: ${DOCINTEL_POSTGRES_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/postgres
         target: /var/lib/postgresql/data
     healthcheck:
       test:
@@ -25,6 +49,7 @@ services:
       start_period: 10s
 
   migrate:
+    <<: *api-image
     build:
       context: ./apps/api
     command: ["alembic", "upgrade", "head"]
@@ -37,21 +62,12 @@ services:
     restart: "no"
 
   api:
-    build:
-      context: ./apps/api
+    <<: *api-image
     environment:
-      DOCINTEL_ENVIRONMENT: development
-      DOCINTEL_LOG_LEVEL: ${DOCINTEL_LOG_LEVEL:-INFO}
-      DOCINTEL_DATABASE_URL: postgresql+psycopg://${DOCINTEL_POSTGRES_USER}:${DOCINTEL_POSTGRES_PASSWORD}@db:5432/${DOCINTEL_POSTGRES_DB}
-      DOCINTEL_UPLOADS_PATH: /data/uploads
-      DOCINTEL_PROCESSED_PATH: /data/processed
-      DOCINTEL_SAMPLES_PATH: /data/samples
-      DOCINTEL_BACKUPS_PATH: /data/backups
-      DOCINTEL_CORS_ORIGINS: '["http://localhost:${DOCINTEL_WEB_PORT:-5173}"]'
+      <<: *api-environment
+      DOCINTEL_CORS_ORIGINS: '${DOCINTEL_CORS_ORIGINS:-["http://localhost:5173"]}'
       DOCINTEL_UPLOAD_MAX_BYTES: ${DOCINTEL_UPLOAD_MAX_BYTES:-26214400}
       DOCINTEL_UPLOAD_CHUNK_BYTES: ${DOCINTEL_UPLOAD_CHUNK_BYTES:-65536}
-      DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS: ${DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS:-3}
-      DOCINTEL_PROCESSING_VERSION: ${DOCINTEL_PROCESSING_VERSION:-phase4-v1}
       DOCINTEL_QUESTION_MAX_CHARS: ${DOCINTEL_QUESTION_MAX_CHARS:-2000}
       DOCINTEL_QUESTION_MAX_DOCUMENTS: ${DOCINTEL_QUESTION_MAX_DOCUMENTS:-20}
       DOCINTEL_RETRIEVAL_CANDIDATE_POOL: ${DOCINTEL_RETRIEVAL_CANDIDATE_POOL:-40}
@@ -63,31 +79,21 @@ services:
       DOCINTEL_RETRIEVAL_DUPLICATE_OVERLAP_RATIO: ${DOCINTEL_RETRIEVAL_DUPLICATE_OVERLAP_RATIO:-0.7}
       DOCINTEL_MOCK_ANSWER_MODEL: ${DOCINTEL_MOCK_ANSWER_MODEL:-mock-grounded-v1}
       DOCINTEL_MOCK_VERIFIER_MODEL: ${DOCINTEL_MOCK_VERIFIER_MODEL:-mock-claim-verifier-v1}
-      DOCINTEL_AI_TIMEOUT_SECONDS: ${DOCINTEL_AI_TIMEOUT_SECONDS:-20}
-      DOCINTEL_AI_MAX_RESPONSE_BYTES: ${DOCINTEL_AI_MAX_RESPONSE_BYTES:-65536}
-      DOCINTEL_DELETION_JOB_MAX_ATTEMPTS: ${DOCINTEL_DELETION_JOB_MAX_ATTEMPTS:-3}
-      DOCINTEL_AI_PROVIDER: ${DOCINTEL_AI_PROVIDER:-mock}
-      DOCINTEL_EMBEDDING_DIMENSIONS: ${DOCINTEL_EMBEDDING_DIMENSIONS:-1536}
-      DOCINTEL_AI_BASE_URL: ${DOCINTEL_AI_BASE_URL:-}
-      DOCINTEL_AI_API_KEY: ${DOCINTEL_AI_API_KEY:-}
-      DOCINTEL_AI_CHAT_MODEL: ${DOCINTEL_AI_CHAT_MODEL:-}
-      DOCINTEL_AI_EMBEDDING_MODEL: ${DOCINTEL_AI_EMBEDDING_MODEL:-}
-      DOCINTEL_AI_STRUCTURED_OUTPUT: ${DOCINTEL_AI_STRUCTURED_OUTPUT:-true}
     ports:
-      - "${DOCINTEL_API_PORT:-8000}:8000"
+      - "${DOCINTEL_BIND_ADDRESS:-127.0.0.1}:${DOCINTEL_API_PORT:-8000}:8000"
     volumes:
       - type: bind
-        source: ${DOCINTEL_UPLOADS_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/uploads
         target: /data/uploads
       - type: bind
-        source: ${DOCINTEL_PROCESSED_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/processed
         target: /data/processed
       - type: bind
-        source: ${DOCINTEL_SAMPLES_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/samples
         target: /data/samples
         read_only: true
       - type: bind
-        source: ${DOCINTEL_BACKUPS_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/backups
         target: /data/backups
     depends_on:
       migrate:
@@ -104,26 +110,14 @@ services:
       timeout: 5s
       retries: 12
       start_period: 5s
+    restart: unless-stopped
 
   worker:
-    build:
-      context: ./apps/api
+    <<: *api-image
     command: ["python", "-m", "docintel.worker.main"]
     environment:
-      DOCINTEL_ENVIRONMENT: development
-      DOCINTEL_LOG_LEVEL: ${DOCINTEL_LOG_LEVEL:-INFO}
-      DOCINTEL_DATABASE_URL: postgresql+psycopg://${DOCINTEL_POSTGRES_USER}:${DOCINTEL_POSTGRES_PASSWORD}@db:5432/${DOCINTEL_POSTGRES_DB}
-      DOCINTEL_UPLOADS_PATH: /data/uploads
-      DOCINTEL_AI_PROVIDER: ${DOCINTEL_AI_PROVIDER:-mock}
-      DOCINTEL_EMBEDDING_DIMENSIONS: ${DOCINTEL_EMBEDDING_DIMENSIONS:-1536}
-      DOCINTEL_AI_BASE_URL: ${DOCINTEL_AI_BASE_URL:-}
-      DOCINTEL_AI_API_KEY: ${DOCINTEL_AI_API_KEY:-}
-      DOCINTEL_AI_EMBEDDING_MODEL: ${DOCINTEL_AI_EMBEDDING_MODEL:-}
-      DOCINTEL_AI_TIMEOUT_SECONDS: ${DOCINTEL_AI_TIMEOUT_SECONDS:-20}
-      DOCINTEL_AI_MAX_RESPONSE_BYTES: ${DOCINTEL_AI_MAX_RESPONSE_BYTES:-65536}
+      <<: *api-environment
       DOCINTEL_PDF_MAX_PAGES: ${DOCINTEL_PDF_MAX_PAGES:-500}
-      DOCINTEL_PROCESSING_VERSION: ${DOCINTEL_PROCESSING_VERSION:-phase4-v1}
-      DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS: ${DOCINTEL_PROCESSING_JOB_MAX_ATTEMPTS:-3}
       DOCINTEL_PROCESSING_RETRY_BASE_SECONDS: ${DOCINTEL_PROCESSING_RETRY_BASE_SECONDS:-2}
       DOCINTEL_EMBEDDING_BATCH_SIZE: ${DOCINTEL_EMBEDDING_BATCH_SIZE:-32}
       DOCINTEL_MOCK_EMBEDDING_MODEL: ${DOCINTEL_MOCK_EMBEDDING_MODEL:-mock-hash-v1}
@@ -131,26 +125,45 @@ services:
       DOCINTEL_CHUNK_MAX_CHARS: ${DOCINTEL_CHUNK_MAX_CHARS:-1800}
       DOCINTEL_CHUNK_OVERLAP_CHARS: ${DOCINTEL_CHUNK_OVERLAP_CHARS:-200}
       DOCINTEL_CHUNKER_VERSION: ${DOCINTEL_CHUNKER_VERSION:-deterministic-char-v1}
-      DOCINTEL_DELETION_JOB_MAX_ATTEMPTS: ${DOCINTEL_DELETION_JOB_MAX_ATTEMPTS:-3}
       DOCINTEL_DELETION_RETRY_BASE_SECONDS: ${DOCINTEL_DELETION_RETRY_BASE_SECONDS:-5}
       DOCINTEL_WORKER_POLL_SECONDS: ${DOCINTEL_WORKER_POLL_SECONDS:-1}
       DOCINTEL_WORKER_LEASE_SECONDS: ${DOCINTEL_WORKER_LEASE_SECONDS:-30}
     volumes:
       - type: bind
-        source: ${DOCINTEL_UPLOADS_DATA_PATH}
+        source: ${DOCINTEL_DATA_ROOT:-E:/DocIntelData}/uploads
         target: /data/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from pathlib import Path; assert Path('/data/uploads').is_dir()",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     restart: unless-stopped
 
   web:
+    image: ${DOCINTEL_WEB_IMAGE:-docintel-web:local}
     build:
       context: ./apps/web
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
     ports:
-      - "${DOCINTEL_WEB_PORT:-5173}:5173"
+      - "${DOCINTEL_BIND_ADDRESS:-127.0.0.1}:${DOCINTEL_WEB_PORT:-5173}:8080"
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
