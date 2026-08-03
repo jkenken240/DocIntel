@@ -109,9 +109,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     env:
-      DOCINTEL_COMPOSE_PROJECT: docintel-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      DOCINTEL_DATA_ROOT: ${{ runner.temp }}/docintel-phase7b-${{ github.run_id }}-${{ github.run_attempt }}
-      DOCINTEL_DIAGNOSTICS_ROOT: ${{ runner.temp }}/docintel-phase7b-diagnostics
       DOCINTEL_BIND_ADDRESS: 127.0.0.1
       DOCINTEL_POSTGRES_USER: docintel
       DOCINTEL_POSTGRES_PASSWORD: docintel_ci_only
@@ -129,6 +126,26 @@ jobs:
       DOCINTEL_E2E_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v5
+      - name: Initialize isolated runtime paths
+        id: initialize-ci-paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${RUNNER_TEMP:-}"
+          test -n "${GITHUB_RUN_ID:-}"
+          test -n "${GITHUB_RUN_ATTEMPT:-}"
+
+          compose_project="docintel-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          data_root="${RUNNER_TEMP}/docintel-phase7b-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          diagnostics_root="${RUNNER_TEMP}/docintel-phase7b-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          {
+            echo "DOCINTEL_COMPOSE_PROJECT=${compose_project}"
+            echo "DOCINTEL_DATA_ROOT=${data_root}"
+            echo "DOCINTEL_DIAGNOSTICS_ROOT=${diagnostics_root}"
+            echo "DOCINTEL_CI_PATHS_INITIALIZED=1"
+          } >> "$GITHUB_ENV"
+          echo "diagnostics_root=${diagnostics_root}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -179,14 +196,28 @@ jobs:
           name: phase7b-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             apps/web/test-results
-            ${{ runner.temp }}/docintel-phase7b-diagnostics
+            ${{ steps.initialize-ci-paths.outputs.diagnostics_root }}
           if-no-files-found: ignore
           retention-days: 7
       - name: Tear down only the isolated CI stack and data root
         if: always()
+        shell: bash
         run: |
+          if [ "${DOCINTEL_CI_PATHS_INITIALIZED:-}" != "1" ]; then
+            echo "Runtime paths were not initialized; no isolated resources exist to remove."
+            exit 0
+          fi
+          test -n "${RUNNER_TEMP:-}"
+          test -n "${DOCINTEL_COMPOSE_PROJECT:-}"
+          test -n "${DOCINTEL_DATA_ROOT:-}"
+
+          expected_project="docintel-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_data_root="${RUNNER_TEMP}/docintel-phase7b-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$DOCINTEL_COMPOSE_PROJECT" = "$expected_project"
+          test "$DOCINTEL_DATA_ROOT" = "$expected_data_root"
+
           docker compose -p "$DOCINTEL_COMPOSE_PROJECT" down --remove-orphans || true
           case "$DOCINTEL_DATA_ROOT" in
-            "$RUNNER_TEMP"/docintel-phase7b-*) rm -rf -- "$DOCINTEL_DATA_ROOT" ;;
+            "$RUNNER_TEMP"/docintel-phase7b-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT") rm -rf -- "$DOCINTEL_DATA_ROOT" ;;
             *) echo "Refusing to remove unexpected data root: $DOCINTEL_DATA_ROOT" >&2; exit 1 ;;
           esac
