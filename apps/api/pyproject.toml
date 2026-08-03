@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "docintel-api"
-version = "0.1.0"
-description = "DocIntel FastAPI platform foundation"
+version = "1.0.0"
+description = "DocIntel local grounded document-intelligence API"
 requires-python = ">=3.13"
 dependencies = [
   "alembic>=1.16,<2",

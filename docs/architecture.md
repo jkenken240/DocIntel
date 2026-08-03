@@ -1,12 +1,13 @@
-# Phase 6 architecture
+# DocIntel v1.0 architecture
 
 ## Scope
 
-Phase 6 exposes the secure lifecycle and grounded-answer backend through one
-cohesive browser workspace. The frontend preserves the backend as the source of
-truth: a document is selectable only when it is `READY`, an answer is shown
-only when the persisted result is `answered`, and every visual citation comes
-from structured claim and evidence records.
+DocIntel v1.0 exposes the secure document lifecycle and grounded-answer backend
+through one cohesive, production-packaged browser workspace. The frontend
+preserves the backend as the source of truth: a document is selectable only
+when it is `READY`, an answer is shown only when the persisted result is
+`answered`, and every visual citation comes from structured claim and evidence
+records.
 
 The implemented runtime services are:
 
@@ -15,7 +16,8 @@ The implemented runtime services are:
 - `api`: FastAPI health, document lifecycle, question, retrieval, and grounded
   answer APIs.
 - `worker`: a durable processing and deletion job consumer.
-- `web`: the responsive React/Vite document intelligence workspace.
+- `web`: the responsive React document intelligence workspace, built by Vite
+  and served as static production assets by nginx.
 
 ## Boundaries
 
@@ -99,7 +101,7 @@ Revision `20260730_0001` installs the `vector` extension. Revision
   leases, cancellation, and safe error state.
 
 The document and its initial processing job are inserted in one transaction.
-Phase 3 processing jobs remain queued until the Phase 4 worker is deployed. An
+Processing jobs remain queued until the durable worker claims them. An
 active-job partial unique index prevents duplicate queued/running jobs of the
 same kind for a document.
 
@@ -251,8 +253,8 @@ only; the backend remains authoritative.
 The question view derives claim markers from structured citation rows.
 Selecting a claim exposes its citations; selecting a citation retains the exact
 immutable excerpt and loads the correct document and original one-based page in
-the adjacent PDF.js viewer. Because Phase 5 does not persist PDF geometry, the
-UI does not guess visual text coordinates.
+the adjacent PDF.js viewer. Because the backend does not persist PDF geometry,
+the UI does not guess visual text coordinates.
 
 Document deletion is explicitly confirmed and warns that dependent grounded
 answers may be removed. Insufficient evidence is a deliberate non-answer state,
@@ -264,9 +266,39 @@ navigation; document rows, question/evidence splits, dialogs, and the viewer
 adapt at tablet and phone widths. Semantic controls, visible focus, status live
 regions, and reduced-motion rules cover the primary accessible workflow.
 
+## Deployment and trust boundary
+
+The production Compose topology is intentionally local. Database, API, and web
+ports publish on `127.0.0.1` by default, and persistent bind mounts resolve from
+an explicit data root outside the repository. The web image contains compiled
+assets and nginx; it does not run the Vite development server. The API and
+worker images install a built Python artifact without development tools or the
+test suite.
+
+There is no user identity or authorization boundary in v1.0. Anyone who can
+reach the local ports can operate the workspace and access its protected PDF
+endpoint. Public or LAN exposure therefore requires authentication,
+authorization, TLS termination, rate limiting, operational monitoring, and a
+new security review.
+
+## Release validation boundary
+
+CI builds the packaged production images, migrates an empty pgvector database,
+starts all five services under a unique Compose project, and runs browser tests
+against nginx rather than Vite. Desktop Chromium covers upload through grounded
+answer, citation/PDF navigation, insufficient evidence, deletion, and dependent
+answer cleanup. Mobile Chromium covers direct routes, keyboard reachability,
+responsive navigation, and reduced motion. Axe scans cover eleven important
+states with no accepted serious or critical exceptions.
+
+Generated PDFs, browser traces, reports, screenshots from failed attempts,
+databases, and CI credentials are not repository artifacts. CI diagnostics are
+bounded, failure-only, uploaded before cleanup, and never include provider
+secrets or document contents.
+
 ## Deferred work
 
-The following are not part of Phase 6:
+The following are not part of DocIntel v1.0:
 
 - OCR
 - live-provider validation or paid AI requests

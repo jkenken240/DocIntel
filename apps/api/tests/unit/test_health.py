@@ -28,7 +28,7 @@ def test_liveness_has_no_dependency_checks(tmp_path: Path) -> None:
     assert response.json() == {
         "status": "alive",
         "service": "DocIntel API",
-        "version": "0.1.0",
+        "version": "1.0.0",
     }
 
 
