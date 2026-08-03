@@ -7,7 +7,7 @@ import {
   MessageSquareText,
   Orbit,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import { fetchReadiness } from "../lib/api/health";
 import { AppLink, useRouter } from "../lib/router";
@@ -28,6 +28,15 @@ function isActive(pathname: string, destination: string): boolean {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { pathname } = useRouter();
+  const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      mainRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pathname]);
+
   const readiness = useQuery({
     queryKey: ["platform-readiness"],
     queryFn: ({ signal }) => fetchReadiness(signal),
@@ -107,7 +116,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         </span>
       </header>
 
-      <main id="workspace-main" className="workspace-main" tabIndex={-1}>
+      <main
+        ref={mainRef}
+        id="workspace-main"
+        className="workspace-main"
+        tabIndex={-1}
+      >
         {readiness.isError ? (
           <div className="global-warning" role="alert">
             <span>DocIntel cannot reach the local workspace API.</span>

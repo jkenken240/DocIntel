@@ -102,16 +102,119 @@ export function contentUrl(documentId: string): string {
   return `${API_BASE_URL}/documents/${encodeURIComponent(documentId)}/content`;
 }
 
+export type PdfContentTypeCategory =
+  | "pdf"
+  | "problem-json"
+  | "json"
+  | "other"
+  | "missing";
+
+export type PdfFetchFailureStage = "request" | "http" | "body";
+
+export class PdfFetchError extends Error {
+  readonly stage: PdfFetchFailureStage;
+  readonly status: number | null;
+  readonly contentTypeCategory: PdfContentTypeCategory;
+  readonly byteLength: number | null;
+  readonly exceptionName: string;
+
+  constructor({
+    stage,
+    status = null,
+    contentTypeCategory = "missing",
+    byteLength = null,
+    exceptionName = "OtherError",
+    safeMessage,
+  }: {
+    stage: PdfFetchFailureStage;
+    status?: number | null;
+    contentTypeCategory?: PdfContentTypeCategory;
+    byteLength?: number | null;
+    exceptionName?: string;
+    safeMessage: string;
+  }) {
+    super(safeMessage);
+    this.name = "PdfFetchError";
+    this.stage = stage;
+    this.status = status;
+    this.contentTypeCategory = contentTypeCategory;
+    this.byteLength = byteLength;
+    this.exceptionName = exceptionName;
+  }
+}
+
+export interface FetchedPdf {
+  blob: Blob;
+  status: number;
+  contentTypeCategory: PdfContentTypeCategory;
+  byteLength: number;
+}
+
+function contentTypeCategory(value: string | null): PdfContentTypeCategory {
+  const normalized = value?.split(";", 1)[0]?.trim().toLocaleLowerCase() ?? "";
+  if (!normalized) return "missing";
+  if (normalized === "application/pdf") return "pdf";
+  if (normalized === "application/problem+json") return "problem-json";
+  if (normalized === "application/json") return "json";
+  return "other";
+}
+
+function safeTransportExceptionName(error: unknown): string {
+  const name = error instanceof Error ? error.name : "OtherError";
+  return new Set(["AbortError", "Error", "NetworkError", "TypeError"]).has(name)
+    ? name
+    : "OtherError";
+}
+
 export async function fetchPdf(
   documentId: string,
   signal?: AbortSignal,
-): Promise<Blob> {
-  const response = await fetch(contentUrl(documentId), {
-    headers: { Accept: "application/pdf" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await problemFromResponse(response);
+): Promise<FetchedPdf> {
+  let response: Response;
+  try {
+    response = await fetch(contentUrl(documentId), {
+      cache: "no-store",
+      headers: { Accept: "application/pdf" },
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new PdfFetchError({
+      stage: "request",
+      exceptionName: safeTransportExceptionName(error),
+      safeMessage:
+        "DocIntel could not reach the protected PDF. Check the service and try again.",
+    });
   }
-  return response.blob();
+
+  const category = contentTypeCategory(response.headers.get("content-type"));
+  if (!response.ok) {
+    const problem = await problemFromResponse(response);
+    throw new PdfFetchError({
+      stage: "http",
+      status: response.status,
+      contentTypeCategory: category,
+      exceptionName: "PdfFetchError",
+      safeMessage: problem.message,
+    });
+  }
+
+  try {
+    const blob = await response.blob();
+    return {
+      blob,
+      status: response.status,
+      contentTypeCategory: category,
+      byteLength: blob.size,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new PdfFetchError({
+      stage: "body",
+      status: response.status,
+      contentTypeCategory: category,
+      exceptionName: safeTransportExceptionName(error),
+      safeMessage: "The protected PDF response could not be read.",
+    });
+  }
 }

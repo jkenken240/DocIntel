@@ -42,9 +42,23 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: apps/api/pyproject.toml
-      - name: Install backend dependencies
-        run: python -m pip install -e ".[dev]"
+          cache-dependency-path: |
+            apps/api/requirements.lock
+            apps/api/requirements-dev.lock
+      - name: Install frozen development dependencies
+        run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: Build wheel and source distribution
+        run: python -m build --no-isolation --outdir dist
+      - name: Install packaged application for checks
+        run: python -m pip install --no-deps dist/*.whl
+      - name: Smoke-test the built wheel with frozen runtime dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/docintel-runtime-smoke"
+          "$RUNNER_TEMP/docintel-runtime-smoke/bin/python" -m pip install --require-hashes --no-deps -r requirements.lock
+          "$RUNNER_TEMP/docintel-runtime-smoke/bin/python" -m pip install --no-deps dist/*.whl
+          "$RUNNER_TEMP/docintel-runtime-smoke/bin/python" -c "from docintel.main import app; assert app.title == 'DocIntel API'"
+      - name: Audit locked runtime dependencies
+        run: python -m pip_audit -r requirements.lock
       - name: Prepare test storage
         run: mkdir -p /tmp/docintel/{uploads,processed,samples,backups}
       - name: Check formatting
@@ -55,9 +69,13 @@ jobs:
         run: python -m mypy src tests
       - name: Run unit tests
         run: python -m pytest tests/unit
-      - name: Upgrade clean database
+      - name: Upgrade clean database through migration head
         run: alembic upgrade head
-      - name: Run platform integration test
+      - name: Verify migration revision and model drift
+        run: |
+          alembic current | grep 20260730_0004
+          alembic check
+      - name: Run PostgreSQL and pgvector integration tests
         env:
           DOCINTEL_RUN_INTEGRATION: "1"
         run: python -m pytest tests/integration
@@ -74,13 +92,101 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - name: Install frontend dependencies
+      - name: Install frozen frontend dependencies
         run: npm ci
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
       - name: Lint
         run: npm run lint
       - name: Type check
         run: npm run typecheck
       - name: Run component tests
         run: npm run test
-      - name: Build
+      - name: Build production frontend
         run: npm run build
+
+  full-stack-browser:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    env:
+      DOCINTEL_COMPOSE_PROJECT: docintel-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCINTEL_DATA_ROOT: ${{ runner.temp }}/docintel-phase7b-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCINTEL_DIAGNOSTICS_ROOT: ${{ runner.temp }}/docintel-phase7b-diagnostics
+      DOCINTEL_BIND_ADDRESS: 127.0.0.1
+      DOCINTEL_POSTGRES_USER: docintel
+      DOCINTEL_POSTGRES_PASSWORD: docintel_ci_only
+      DOCINTEL_POSTGRES_DB: docintel
+      DOCINTEL_POSTGRES_PORT: "55432"
+      DOCINTEL_API_PORT: "58000"
+      DOCINTEL_WEB_PORT: "55173"
+      DOCINTEL_CORS_ORIGINS: '["http://127.0.0.1:55173"]'
+      DOCINTEL_AI_PROVIDER: mock
+      DOCINTEL_API_IMAGE: docintel-api:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DOCINTEL_WEB_IMAGE: docintel-web:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VITE_API_BASE_URL: http://127.0.0.1:58000/api/v1
+      DOCINTEL_E2E_WEB_URL: http://127.0.0.1:55173
+      DOCINTEL_E2E_API_URL: http://127.0.0.1:58000/api/v1
+      DOCINTEL_E2E_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install frozen browser-test dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Install Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Prepare isolated empty data root
+        run: |
+          test "${DOCINTEL_DATA_ROOT#${RUNNER_TEMP}/docintel-phase7b-}" != "$DOCINTEL_DATA_ROOT"
+          mkdir -p "$DOCINTEL_DATA_ROOT"/{postgres,uploads,processed,samples,backups}
+      - name: Validate production Compose configuration
+        run: docker compose -p "$DOCINTEL_COMPOSE_PROJECT" config --quiet
+      - name: Build production images
+        run: docker compose -p "$DOCINTEL_COMPOSE_PROJECT" build
+      - name: Start isolated production stack
+        run: |
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" up -d --wait --wait-timeout 120 db
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" up -d --wait --wait-timeout 180 api worker web
+      - name: Verify services, migration, and loopback publishing
+        run: |
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps -a -q migrate)")" = "0"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" exec -T db pg_isready -U "$DOCINTEL_POSTGRES_USER" -d "$DOCINTEL_POSTGRES_DB"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" exec -T db psql -U "$DOCINTEL_POSTGRES_USER" -d "$DOCINTEL_POSTGRES_DB" -Atc "SELECT extversion FROM pg_extension WHERE extname = 'vector';" | grep -E '^[0-9]'
+          curl --fail --silent "http://127.0.0.1:${DOCINTEL_API_PORT}/api/v1/health/ready" | python -c "import json,sys; data=json.load(sys.stdin); assert data['status']=='ready'; required={'database','pgvector','migration','storage','provider'}; assert required <= data['checks'].keys(); assert all(data['checks'][key]['status']=='ready' for key in required)"
+          curl --fail --silent "http://127.0.0.1:${DOCINTEL_WEB_PORT}/healthz" | grep ok
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" exec -T api alembic current | grep 20260730_0004
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" port db 5432 | grep "^127.0.0.1:"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" port api 8000 | grep "^127.0.0.1:"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" port web 8080 | grep "^127.0.0.1:"
+      - name: Run production full-stack browser and accessibility tests
+        working-directory: apps/web
+        run: npm run test:e2e
+      - name: Capture failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p "$DOCINTEL_DIAGNOSTICS_ROOT"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps --all > "$DOCINTEL_DIAGNOSTICS_ROOT/compose-ps.txt" 2>&1 || true
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" logs --no-color > "$DOCINTEL_DIAGNOSTICS_ROOT/compose.log" 2>&1 || true
+      - name: Upload failure-only browser and Compose diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase7b-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/web/test-results
+            ${{ runner.temp }}/docintel-phase7b-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Tear down only the isolated CI stack and data root
+        if: always()
+        run: |
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" down --remove-orphans || true
+          case "$DOCINTEL_DATA_ROOT" in
+            "$RUNNER_TEMP"/docintel-phase7b-*) rm -rf -- "$DOCINTEL_DATA_ROOT" ;;
+            *) echo "Refusing to remove unexpected data root: $DOCINTEL_DATA_ROOT" >&2; exit 1 ;;
+          esac

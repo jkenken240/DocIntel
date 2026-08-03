@@ -324,6 +324,45 @@ describe("DocIntel workspace", () => {
     expect(document.title).toBe("Overview · DocIntel");
   });
 
+  it("moves focus on route changes without stealing it during page interaction", async () => {
+    installFetch((url) => {
+      if (url.pathname.endsWith("/health/ready")) return json(readiness());
+      if (url.pathname.endsWith("/documents")) {
+        return json({ items: [readyOne], next_cursor: null });
+      }
+      throw new Error(`Unhandled ${url}`);
+    });
+    const user = userEvent.setup();
+    renderApp("/");
+
+    const main = screen.getByRole("main");
+    await waitFor(() => expect(main).toHaveFocus());
+
+    await user.click(
+      within(screen.getByRole("navigation", { name: "Primary navigation" })).getByRole(
+        "link",
+        { name: "Documents" },
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: "Document library" })).toBeVisible();
+    expect(main).toHaveFocus();
+
+    const search = screen.getByRole("searchbox", { name: "Search documents" });
+    await user.type(search, "Atlas");
+    expect(search).toHaveFocus();
+
+    await user.click(
+      within(screen.getByRole("navigation", { name: "Primary navigation" })).getByRole(
+        "link",
+        { name: "Ask DocIntel" },
+      ),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Ask the evidence, not a chatbot." }),
+    ).toBeVisible();
+    expect(main).toHaveFocus();
+  });
+
   it("loads, searches, filters, selects, retries, and deletes documents", async () => {
     const requests: Array<{ method: string; url: string }> = [];
     installFetch((url, init) => {
@@ -506,10 +545,12 @@ describe("DocIntel workspace", () => {
 
   it("presents structured claims and moves cross-document citations to exact PDF pages", async () => {
     const result = groundedResult();
-    installFetch((url) => {
+    const pdfCacheModes: Array<RequestCache | undefined> = [];
+    installFetch((url, init) => {
       if (url.pathname.endsWith("/health/ready")) return json(readiness());
       if (url.pathname.endsWith(`/questions/${QUESTION_ID}`)) return json(result);
       if (url.pathname.endsWith("/content")) {
+        pdfCacheModes.push(init?.cache);
         return new Response(new Blob(["%PDF-test"]), {
           status: 200,
           headers: { "Content-Type": "application/pdf" },
@@ -549,6 +590,8 @@ describe("DocIntel workspace", () => {
     expect(
       screen.getByRole("heading", { name: readyTwo.name }),
     ).toBeVisible();
+    expect(pdfCacheModes.length).toBeGreaterThan(0);
+    expect(new Set(pdfCacheModes)).toEqual(new Set(["no-store"]));
   });
 
   it("treats insufficient evidence as a deliberate non-answer state", async () => {

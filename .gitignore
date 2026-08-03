@@ -18,6 +18,9 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+playwright-report/
+test-results/
+blob-report/
 
 # Logs and local tooling
 *.log
