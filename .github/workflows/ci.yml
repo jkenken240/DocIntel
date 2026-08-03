@@ -158,9 +158,66 @@ jobs:
         working-directory: apps/web
         run: npx playwright install --with-deps chromium
       - name: Prepare isolated empty data root
+        shell: bash
         run: |
-          test "${DOCINTEL_DATA_ROOT#${RUNNER_TEMP}/docintel-phase7b-}" != "$DOCINTEL_DATA_ROOT"
-          mkdir -p "$DOCINTEL_DATA_ROOT"/{postgres,uploads,processed,samples,backups}
+          set -euo pipefail
+          test -n "${RUNNER_TEMP:-}"
+          test -n "${GITHUB_RUN_ID:-}"
+          test -n "${GITHUB_RUN_ATTEMPT:-}"
+          test -n "${DOCINTEL_DATA_ROOT:-}"
+
+          case "$DOCINTEL_DATA_ROOT" in
+            /*) ;;
+            *) echo "Refusing non-absolute CI data root." >&2; exit 1 ;;
+          esac
+          case "$DOCINTEL_DATA_ROOT" in
+            *'*'*|*'?'*|*'['*|*']'*) echo "Refusing glob-containing CI data root." >&2; exit 1 ;;
+          esac
+
+          expected_data_root="${RUNNER_TEMP}/docintel-phase7b-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$DOCINTEL_DATA_ROOT" = "$expected_data_root"
+          if [ -L "$DOCINTEL_DATA_ROOT" ]; then
+            echo "Refusing symlinked CI data root." >&2
+            exit 1
+          fi
+          if [ -e "$DOCINTEL_DATA_ROOT" ] && [ ! -d "$DOCINTEL_DATA_ROOT" ]; then
+            echo "Refusing non-directory CI data root." >&2
+            exit 1
+          fi
+
+          configured_data_root=$(realpath -m -- "$DOCINTEL_DATA_ROOT")
+          expected_data_root_canonical=$(realpath -m -- "$expected_data_root")
+          runner_temp_canonical=$(realpath -e -- "$RUNNER_TEMP")
+          test "$configured_data_root" = "$expected_data_root_canonical"
+          test "$(dirname -- "$configured_data_root")" = "$runner_temp_canonical"
+
+          mkdir -p -- "$DOCINTEL_DATA_ROOT"
+          test -d "$DOCINTEL_DATA_ROOT"
+          test ! -L "$DOCINTEL_DATA_ROOT"
+
+          application_storage_paths=(
+            "$DOCINTEL_DATA_ROOT/uploads"
+            "$DOCINTEL_DATA_ROOT/processed"
+            "$DOCINTEL_DATA_ROOT/samples"
+            "$DOCINTEL_DATA_ROOT/backups"
+          )
+          for storage_path in "${application_storage_paths[@]}"; do
+            if [ -L "$storage_path" ]; then
+              echo "Refusing symlinked application-storage path: $storage_path" >&2
+              exit 1
+            fi
+            if [ -e "$storage_path" ] && [ ! -d "$storage_path" ]; then
+              echo "Refusing non-directory application-storage path: $storage_path" >&2
+              exit 1
+            fi
+          done
+
+          sudo install -d -o 10001 -g 10001 -m 0755 -- "${application_storage_paths[@]}"
+          for storage_path in "${application_storage_paths[@]}"; do
+            test -d "$storage_path"
+            test ! -L "$storage_path"
+            test "$(stat -c '%u:%g:%a' -- "$storage_path")" = "10001:10001:755"
+          done
       - name: Validate production Compose configuration
         run: docker compose -p "$DOCINTEL_COMPOSE_PROJECT" config --quiet
       - name: Build production images
@@ -484,11 +541,15 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
           if [ "${DOCINTEL_CI_PATHS_INITIALIZED:-}" != "1" ]; then
             echo "Runtime paths were not initialized; no isolated resources exist to remove."
             exit 0
           fi
           test -n "${RUNNER_TEMP:-}"
+          test -n "${GITHUB_RUN_ID:-}"
+          test -n "${GITHUB_RUN_ATTEMPT:-}"
+          test -n "${GITHUB_WORKSPACE:-}"
           test -n "${DOCINTEL_COMPOSE_PROJECT:-}"
           test -n "${DOCINTEL_DATA_ROOT:-}"
 
@@ -497,8 +558,51 @@ jobs:
           test "$DOCINTEL_COMPOSE_PROJECT" = "$expected_project"
           test "$DOCINTEL_DATA_ROOT" = "$expected_data_root"
 
-          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" down --remove-orphans || true
           case "$DOCINTEL_DATA_ROOT" in
-            "$RUNNER_TEMP"/docintel-phase7b-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT") rm -rf -- "$DOCINTEL_DATA_ROOT" ;;
-            *) echo "Refusing to remove unexpected data root: $DOCINTEL_DATA_ROOT" >&2; exit 1 ;;
+            /*) ;;
+            *) echo "Refusing non-absolute CI data root." >&2; exit 1 ;;
           esac
+          case "$DOCINTEL_DATA_ROOT" in
+            *'*'*|*'?'*|*'['*|*']'*) echo "Refusing glob-containing CI data root." >&2; exit 1 ;;
+          esac
+          if [ -L "$DOCINTEL_DATA_ROOT" ]; then
+            echo "Refusing symlinked CI data root." >&2
+            exit 1
+          fi
+
+          configured_data_root=$(realpath -m -- "$DOCINTEL_DATA_ROOT")
+          expected_data_root_canonical=$(realpath -m -- "$expected_data_root")
+          runner_temp_canonical=$(realpath -e -- "$RUNNER_TEMP")
+          workspace_canonical=$(realpath -m -- "$GITHUB_WORKSPACE")
+          test "$configured_data_root" = "$expected_data_root_canonical"
+          test "$(dirname -- "$configured_data_root")" = "$runner_temp_canonical"
+          test "$configured_data_root" != "/"
+          test "$configured_data_root" != "$runner_temp_canonical"
+          case "$configured_data_root" in
+            "$workspace_canonical"|"$workspace_canonical"/*)
+              echo "Refusing repository path as CI data root." >&2
+              exit 1
+              ;;
+          esac
+
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" down --remove-orphans
+
+          remaining_containers=$(docker ps -aq --filter "label=com.docker.compose.project=$DOCINTEL_COMPOSE_PROJECT")
+          if [ -n "$remaining_containers" ]; then
+            echo "Refusing data removal while project containers remain." >&2
+            exit 1
+          fi
+          remaining_networks=$(docker network ls -q --filter "label=com.docker.compose.project=$DOCINTEL_COMPOSE_PROJECT")
+          if [ -n "$remaining_networks" ]; then
+            echo "Refusing data removal while project networks remain." >&2
+            exit 1
+          fi
+
+          if [ -e "$DOCINTEL_DATA_ROOT" ]; then
+            test -d "$DOCINTEL_DATA_ROOT"
+            test ! -L "$DOCINTEL_DATA_ROOT"
+            sudo find "$DOCINTEL_DATA_ROOT" -xdev -depth -mindepth 1 -delete
+            sudo rmdir -- "$DOCINTEL_DATA_ROOT"
+          fi
+          test ! -e "$DOCINTEL_DATA_ROOT"
+          test ! -L "$DOCINTEL_DATA_ROOT"
