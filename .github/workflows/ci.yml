@@ -185,10 +185,291 @@ jobs:
         run: npm run test:e2e
       - name: Capture failure diagnostics
         if: failure()
+        shell: bash
         run: |
+          set +e
           mkdir -p "$DOCINTEL_DIAGNOSTICS_ROOT"
-          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps --all > "$DOCINTEL_DIAGNOSTICS_ROOT/compose-ps.txt" 2>&1 || true
-          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" logs --no-color > "$DOCINTEL_DIAGNOSTICS_ROOT/compose.log" 2>&1 || true
+          diagnostics_mkdir_status=$?
+          if [ "$diagnostics_mkdir_status" -ne 0 ]; then
+            echo "Unable to create the initialized diagnostics directory." >&2
+            exit 0
+          fi
+
+          command_status="$DOCINTEL_DIAGNOSTICS_ROOT/diagnostic-command-status.txt"
+          : > "$command_status"
+          record_status() {
+            printf '%s=%s\n' "$1" "$2" >> "$command_status"
+          }
+          record_status diagnostics_mkdir "$diagnostics_mkdir_status"
+
+          readiness_url="http://127.0.0.1:${DOCINTEL_API_PORT}/api/v1/health/ready"
+          readiness_headers="$DOCINTEL_DIAGNOSTICS_ROOT/readiness-headers.tmp"
+          readiness_body="$DOCINTEL_DIAGNOSTICS_ROOT/readiness-body.json"
+          readiness_status="$DOCINTEL_DIAGNOSTICS_ROOT/readiness-status.txt"
+          readiness_content_type="$DOCINTEL_DIAGNOSTICS_ROOT/readiness-content-type.txt"
+          readiness_curl_error="$DOCINTEL_DIAGNOSTICS_ROOT/readiness-curl-error.txt"
+
+          curl --silent --show-error --connect-timeout 3 --max-time 10 \
+            --output "$readiness_body" \
+            --dump-header "$readiness_headers" \
+            --write-out '%{http_code}' \
+            "$readiness_url" > "$readiness_status" 2> "$readiness_curl_error"
+          host_readiness_status=$?
+          record_status host_readiness_curl "$host_readiness_status"
+          if [ ! -s "$readiness_status" ]; then
+            printf 'unavailable\n' > "$readiness_status"
+          fi
+          awk 'BEGIN { IGNORECASE=1 } /^Content-Type:/ { value=$0; sub(/^[^:]*:[[:space:]]*/, "", value); sub(/\r$/, "", value); print value }' \
+            "$readiness_headers" | tail -n 1 > "$readiness_content_type"
+          host_content_type_status=$?
+          record_status host_readiness_content_type "$host_content_type_status"
+          if [ ! -s "$readiness_content_type" ]; then
+            printf 'unavailable\n' > "$readiness_content_type"
+          fi
+          rm -f -- "$readiness_headers"
+          record_status host_readiness_header_cleanup "$?"
+
+          internal_envelope="$DOCINTEL_DIAGNOSTICS_ROOT/internal-readiness-envelope.json"
+          internal_error="$DOCINTEL_DIAGNOSTICS_ROOT/internal-readiness-command-error.txt"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" exec -T api python - \
+            > "$internal_envelope" 2> "$internal_error" <<'PY'
+          import base64
+          import json
+          import urllib.error
+          import urllib.request
+
+          url = "http://127.0.0.1:8000/api/v1/health/ready"
+          limit = 65_536
+          try:
+              try:
+                  response = urllib.request.urlopen(url, timeout=5)
+              except urllib.error.HTTPError as exc:
+                  response = exc
+              body = response.read(limit + 1)
+              result = {
+                  "connection": "ok",
+                  "status": response.getcode(),
+                  "content_type": response.headers.get("Content-Type") or "unavailable",
+                  "body_base64": base64.b64encode(body[:limit]).decode("ascii"),
+                  "truncated": len(body) > limit,
+                  "error_type": None,
+              }
+          except Exception as exc:
+              allowed = {"ConnectionRefusedError", "OSError", "TimeoutError", "URLError"}
+              error_type = type(exc).__name__
+              result = {
+                  "connection": "failed",
+                  "status": None,
+                  "content_type": "unavailable",
+                  "body_base64": "",
+                  "truncated": False,
+                  "error_type": error_type if error_type in allowed else "OtherError",
+              }
+          print(json.dumps(result, separators=(",", ":")))
+          PY
+          internal_probe_status=$?
+          record_status internal_readiness_probe "$internal_probe_status"
+
+          python - "$internal_envelope" "$DOCINTEL_DIAGNOSTICS_ROOT" <<'PY'
+          import base64
+          import json
+          import pathlib
+          import sys
+
+          envelope_path = pathlib.Path(sys.argv[1])
+          output_root = pathlib.Path(sys.argv[2])
+          try:
+              payload = json.loads(envelope_path.read_text(encoding="utf-8"))
+              body = base64.b64decode(payload.get("body_base64", ""), validate=True)
+              (output_root / "internal-readiness-body.txt").write_bytes(body)
+              (output_root / "internal-readiness-status.txt").write_text(
+                  f"{payload.get('status') if payload.get('status') is not None else 'unavailable'}\n",
+                  encoding="utf-8",
+              )
+              (output_root / "internal-readiness-content-type.txt").write_text(
+                  f"{payload.get('content_type') or 'unavailable'}\n",
+                  encoding="utf-8",
+              )
+              (output_root / "internal-readiness-connection.txt").write_text(
+                  f"connection={payload.get('connection', 'unavailable')}\n"
+                  f"error_type={payload.get('error_type') or 'none'}\n"
+                  f"truncated={str(bool(payload.get('truncated'))).lower()}\n",
+                  encoding="utf-8",
+              )
+          except (OSError, ValueError, TypeError, json.JSONDecodeError):
+              (output_root / "internal-readiness-body.txt").write_bytes(b"")
+              (output_root / "internal-readiness-status.txt").write_text("unavailable\n", encoding="utf-8")
+              (output_root / "internal-readiness-content-type.txt").write_text("unavailable\n", encoding="utf-8")
+              (output_root / "internal-readiness-connection.txt").write_text(
+                  "connection=unavailable\nerror_type=DiagnosticParseError\ntruncated=false\n",
+                  encoding="utf-8",
+              )
+              raise SystemExit(1)
+          PY
+          internal_parse_status=$?
+          record_status internal_readiness_parse "$internal_parse_status"
+
+          python - \
+            "$readiness_body" \
+            "$DOCINTEL_DIAGNOSTICS_ROOT/internal-readiness-body.txt" \
+            "$DOCINTEL_DIAGNOSTICS_ROOT/readiness-components.txt" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          expected = ("database", "pgvector", "migration", "storage", "provider")
+          sources = (("host", pathlib.Path(sys.argv[1])), ("container", pathlib.Path(sys.argv[2])))
+          output_path = pathlib.Path(sys.argv[3])
+          parsed = None
+          source_name = "none"
+          for candidate_name, candidate_path in sources:
+              try:
+                  candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+              except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                  continue
+              if isinstance(candidate, dict):
+                  parsed = candidate
+                  source_name = candidate_name
+                  break
+
+          lines = [f"source={source_name}"]
+          if parsed is None:
+              lines.append("parse_status=unparseable_or_missing")
+              lines.extend(f"component.{name}=omitted" for name in expected)
+          else:
+              lines.append("parse_status=parsed")
+              overall = parsed.get("status", "omitted")
+              lines.append(f"overall_status={str(overall)[:80]}")
+              checks = parsed.get("checks")
+              if not isinstance(checks, dict):
+                  lines.append("checks=omitted_or_invalid")
+                  lines.extend(f"component.{name}=omitted" for name in expected)
+              else:
+                  names = list(expected) + sorted(str(name) for name in checks if str(name) not in expected)
+                  for name in names:
+                      safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:80]
+                      value = checks.get(name)
+                      if not isinstance(value, dict):
+                          lines.append(f"component.{safe_name}=omitted_or_invalid")
+                          continue
+                      status = str(value.get("status", "omitted")).replace("\n", " ")[:80]
+                      detail = str(value.get("detail", "omitted")).replace("\n", " ")[:240]
+                      lines.append(f"component.{safe_name}.status={status}")
+                      lines.append(f"component.{safe_name}.detail={detail}")
+          output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          component_parse_status=$?
+          record_status readiness_component_parse "$component_parse_status"
+
+          api_container_id=$(docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps -a -q api 2> "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-id-error.txt")
+          api_container_id_status=$?
+          printf '%s\n' "${api_container_id:-unavailable}" > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-id.txt"
+          record_status api_container_id "$api_container_id_status"
+          if [ -n "$api_container_id" ]; then
+            docker inspect --format 'state={{.State.Status}}{{println}}exit_code={{.State.ExitCode}}{{println}}configured_user={{if .Config.User}}{{.Config.User}}{{else}}default{{end}}' \
+              "$api_container_id" > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-state.txt" \
+              2> "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-state-error.txt"
+            record_status api_container_state "$?"
+            docker inspect --format '{{json .State.Health}}' "$api_container_id" \
+              > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-health.json" \
+              2> "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-health-error.txt"
+            record_status api_container_health "$?"
+            docker inspect --format '{{range .Mounts}}type={{.Type}} destination={{.Destination}}{{println}}{{end}}' \
+              "$api_container_id" > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-mounts.txt" \
+              2> "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-mounts-error.txt"
+            record_status api_container_mounts "$?"
+          else
+            printf 'unavailable\n' > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-state.txt"
+            printf 'null\n' > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-health.json"
+            printf 'unavailable\n' > "$DOCINTEL_DIAGNOSTICS_ROOT/api-container-mounts.txt"
+            record_status api_container_state 125
+            record_status api_container_health 125
+            record_status api_container_mounts 125
+          fi
+
+          host_storage="$DOCINTEL_DIAGNOSTICS_ROOT/host-application-storage.txt"
+          : > "$host_storage"
+          printf 'runner_uid=%s\nrunner_gid=%s\n' "$(id -u)" "$(id -g)" >> "$host_storage"
+          for storage_name in root uploads processed samples backups; do
+            if [ "$storage_name" = "root" ]; then
+              storage_path="$DOCINTEL_DATA_ROOT"
+            else
+              storage_path="$DOCINTEL_DATA_ROOT/$storage_name"
+            fi
+            printf 'name=%s\npath=%s\n' "$storage_name" "$storage_path" >> "$host_storage"
+            if [ -L "$storage_path" ]; then
+              printf 'symlink=yes\n' >> "$host_storage"
+            else
+              printf 'symlink=no\n' >> "$host_storage"
+            fi
+            if [ -e "$storage_path" ]; then
+              printf 'exists=yes\n' >> "$host_storage"
+              stat -c 'type=%F uid=%u gid=%g mode=%a' -- "$storage_path" >> "$host_storage" 2>&1
+              host_stat_status=$?
+            else
+              printf 'exists=no\n' >> "$host_storage"
+              host_stat_status=2
+            fi
+            record_status "host_storage_${storage_name}_stat" "$host_stat_status"
+          done
+
+          for service_name in api worker; do
+            docker compose -p "$DOCINTEL_COMPOSE_PROJECT" exec -T "$service_name" sh -s \
+              > "$DOCINTEL_DIAGNOSTICS_ROOT/${service_name}-application-storage.txt" \
+              2> "$DOCINTEL_DIAGNOSTICS_ROOT/${service_name}-application-storage-error.txt" <<'SH'
+          printf 'effective_uid=%s\neffective_gid=%s\n' "$(id -u)" "$(id -g)"
+          for storage_path in /data/uploads /data/processed /data/samples /data/backups; do
+            printf 'path=%s\n' "$storage_path"
+            if [ -L "$storage_path" ]; then printf 'symlink=yes\n'; else printf 'symlink=no\n'; fi
+            if [ -e "$storage_path" ]; then
+              printf 'exists=yes\n'
+              stat -c 'type=%F uid=%u gid=%g mode=%a' -- "$storage_path"
+              printf 'stat_exit_status=%s\n' "$?"
+            else
+              printf 'exists=no\n'
+              printf 'stat_exit_status=2\n'
+            fi
+            if [ -r "$storage_path" ]; then printf 'readable=yes\n'; else printf 'readable=no\n'; fi
+            if [ -w "$storage_path" ]; then printf 'writable=yes\n'; else printf 'writable=no\n'; fi
+            if [ -x "$storage_path" ]; then printf 'traversable=yes\n'; else printf 'traversable=no\n'; fi
+          done
+          SH
+            record_status "${service_name}_application_storage" "$?"
+          done
+
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" logs --no-color --tail 200 api \
+            > "$DOCINTEL_DIAGNOSTICS_ROOT/api-logs-tail.txt" 2>&1
+          record_status api_logs_tail "$?"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps --all \
+            > "$DOCINTEL_DIAGNOSTICS_ROOT/compose-ps.txt" 2>&1
+          record_status compose_ps "$?"
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps --all --format json \
+            > "$DOCINTEL_DIAGNOSTICS_ROOT/compose-ps.json" 2> "$DOCINTEL_DIAGNOSTICS_ROOT/compose-ps-json-error.txt"
+          record_status compose_ps_json "$?"
+
+          compose_service_state="$DOCINTEL_DIAGNOSTICS_ROOT/compose-service-state.txt"
+          : > "$compose_service_state"
+          for service_name in db migrate api worker web; do
+            service_container_id=$(docker compose -p "$DOCINTEL_COMPOSE_PROJECT" ps -a -q "$service_name" 2>> "$DOCINTEL_DIAGNOSTICS_ROOT/compose-service-state-error.txt")
+            service_id_status=$?
+            record_status "compose_${service_name}_container_id" "$service_id_status"
+            if [ -n "$service_container_id" ]; then
+              printf 'service=%s ' "$service_name" >> "$compose_service_state"
+              docker inspect --format 'state={{.State.Status}} exit_code={{.State.ExitCode}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}not-configured{{end}}' \
+                "$service_container_id" >> "$compose_service_state" \
+                2>> "$DOCINTEL_DIAGNOSTICS_ROOT/compose-service-state-error.txt"
+              record_status "compose_${service_name}_state" "$?"
+            else
+              printf 'service=%s unavailable\n' "$service_name" >> "$compose_service_state"
+              record_status "compose_${service_name}_state" 125
+            fi
+          done
+
+          docker compose -p "$DOCINTEL_COMPOSE_PROJECT" logs --no-color --tail 300 \
+            > "$DOCINTEL_DIAGNOSTICS_ROOT/compose.log" 2>&1
+          record_status compose_logs_tail "$?"
+          exit 0
       - name: Upload failure-only browser and Compose diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
